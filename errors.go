@@ -6,9 +6,18 @@ import "errors"
 // operates on in-memory structs, not byte streams.
 var ErrUnsupported = errors.New("structdefaults: ReadBytes is not supported")
 
-// ErrUnsupportedType is returned when a field carries a koanf-default tag but
-// its type cannot be parsed (e.g. slices, maps, channels).
+// ErrUnsupportedType is returned when a field's Go type cannot carry a
+// koanf-default value at all — e.g. slice, map, channel, or function fields
+// with a default tag. This is a programmer error: fix the struct definition.
 var ErrUnsupportedType = errors.New("structdefaults: unsupported field type")
+
+// ErrInvalidValue is returned when a field's type IS supported but the tag
+// value (or its post-substitution form) cannot be parsed — e.g. a malformed
+// integer, a bad duration string, or a TextUnmarshaler that rejected the
+// input. This is typically an operator/config error: fix the tag value or
+// the env var feeding it. Use errors.As to recover the underlying parse
+// error (*strconv.NumError, etc.).
+var ErrInvalidValue = errors.New("structdefaults: invalid default value")
 
 // ErrInvalidInput is returned by Read when the value passed to Provider or
 // ProviderWithTags is nil, a non-struct, or a nil pointer-to-struct.

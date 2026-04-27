@@ -3,6 +3,7 @@ package structdefaults_test
 import (
 	"errors"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -259,8 +260,8 @@ func TestDuration(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
-		if !errors.Is(err, sd.ErrUnsupportedType) {
-			t.Errorf("expected ErrUnsupportedType, got: %v", err)
+		if !errors.Is(err, sd.ErrInvalidValue) {
+			t.Errorf("expected ErrInvalidValue, got: %v", err)
 		}
 	})
 }
@@ -406,8 +407,8 @@ func TestParseErrors(t *testing.T) {
 		input   any
 		wantErr error
 	}{
-		{"bad_int", &BadInt{}, sd.ErrUnsupportedType},
-		{"bad_duration", &BadDuration{}, sd.ErrUnsupportedType},
+		{"bad_int", &BadInt{}, sd.ErrInvalidValue},
+		{"bad_duration", &BadDuration{}, sd.ErrInvalidValue},
 		{"unsupported_slice", &UnsupportedSlice{}, sd.ErrUnsupportedType},
 	}
 	for _, tc := range cases {
@@ -421,6 +422,27 @@ func TestParseErrors(t *testing.T) {
 				t.Errorf("expected %v, got: %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+// TestParseErrorPreservesUnderlying verifies that the %w error chain produced
+// by parsePrimitive lets callers reach the underlying strconv error via
+// errors.As, not just the ErrInvalidValue sentinel.
+func TestParseErrorPreservesUnderlying(t *testing.T) {
+	t.Parallel()
+	_, err := sd.Provider(&BadInt{}, ".").Read()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, sd.ErrInvalidValue) {
+		t.Errorf("errors.Is(err, ErrInvalidValue) failed: %v", err)
+	}
+	var numErr *strconv.NumError
+	if !errors.As(err, &numErr) {
+		t.Fatalf("errors.As(err, *strconv.NumError) failed: %v", err)
+	}
+	if numErr.Num != "8O8O" {
+		t.Errorf("strconv.NumError.Num = %q, want %q", numErr.Num, "8O8O")
 	}
 }
 

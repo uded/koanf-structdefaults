@@ -8,162 +8,138 @@ import (
 	"time"
 )
 
-var durationType = reflect.TypeOf(time.Duration(0))
-var textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
+var (
+	durationType        = reflect.TypeFor[time.Duration]()
+	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
+)
 
 // parseValue converts the raw tag string into a typed Go value for the given
-// reflect.Type, following the dispatch order in spec §6.
+// reflect.Type, following the dispatch order in the design spec:
 //
-// Returns (parsedValue, nil) on success or (nil, wrapped ErrUnsupportedType)
-// on failure. The configPath and goPath are included in the error for context.
+//  1. time.Duration → time.ParseDuration (must come before TextUnmarshaler;
+//     time.Duration is int64 and does not implement the interface).
+//  2. encoding.TextUnmarshaler (value- or pointer-receiver).
+//  3. Primitive kinds via strconv.
+//  4. Otherwise: ErrUnsupportedType (the type cannot carry a default at all).
+//
+// Steps 1–3 wrap parse failures with ErrInvalidValue so callers can
+// errors.Is(err, ErrInvalidValue). Step 4 returns ErrUnsupportedType
+// (programmer error). Underlying parse errors are preserved via %w so
+// errors.As(err, &target) reaches them.
 func parseValue(fieldType reflect.Type, raw, configPath, goPath string) (any, error) {
-	// 1. time.Duration — must come before the TextUnmarshaler check because
-	//    time.Duration is int64 under the hood and does not implement the interface.
 	if fieldType == durationType {
 		d, err := time.ParseDuration(raw)
 		if err != nil {
-			return nil, fmt.Errorf("%w: config path %q (Go field %s): %v",
-				ErrUnsupportedType, configPath, goPath, err)
+			return nil, wrapInvalidValue(configPath, goPath, err)
 		}
 		return d, nil
 	}
 
-	// 2. encoding.TextUnmarshaler — value-receiver or pointer-receiver.
 	if v, ok, err := tryTextUnmarshaler(fieldType, raw, configPath, goPath); ok {
 		return v, err
 	}
 
-	// 3. Primitive kinds via strconv.
 	return parsePrimitive(fieldType, raw, configPath, goPath)
 }
 
-// tryTextUnmarshaler checks whether fieldType (or *fieldType) implements
-// encoding.TextUnmarshaler and, if so, unmarshals raw into a new value of that
-// type. Returns (value, true, err) if the interface is implemented, or
-// (nil, false, nil) if it is not.
+// tryTextUnmarshaler checks whether *fieldType implements
+// encoding.TextUnmarshaler and, if so, unmarshals raw into a new value of
+// that type. Returns (value, true, err) if the interface is implemented, or
+// (nil, false, nil) if it is not. Both receiver styles are handled by the
+// pointer-receiver branch since *T's method set always contains T's methods.
 func tryTextUnmarshaler(fieldType reflect.Type, raw, configPath, goPath string) (any, bool, error) {
-	// Direct implementation (value receiver on fieldType).
-	if fieldType.Implements(textUnmarshalerType) {
-		v := reflect.New(fieldType).Elem()
-		tu := v.Addr().Interface().(encoding.TextUnmarshaler)
-		if err := tu.UnmarshalText([]byte(raw)); err != nil {
-			return nil, true, fmt.Errorf("%w: config path %q (Go field %s): %v",
-				ErrUnsupportedType, configPath, goPath, err)
-		}
-		return v.Interface(), true, nil
-	}
-
-	// Pointer-receiver implementation: *fieldType implements the interface.
 	ptrType := reflect.PointerTo(fieldType)
-	if ptrType.Implements(textUnmarshalerType) {
-		ptr := reflect.New(fieldType)
-		tu := ptr.Interface().(encoding.TextUnmarshaler)
-		if err := tu.UnmarshalText([]byte(raw)); err != nil {
-			return nil, true, fmt.Errorf("%w: config path %q (Go field %s): %v",
-				ErrUnsupportedType, configPath, goPath, err)
-		}
-		// Return the concrete value (not the pointer) so the map holds the struct.
-		return ptr.Elem().Interface(), true, nil
+	if !ptrType.Implements(textUnmarshalerType) {
+		return nil, false, nil
 	}
-
-	return nil, false, nil
+	ptr := reflect.New(fieldType)
+	tu := ptr.Interface().(encoding.TextUnmarshaler)
+	if err := tu.UnmarshalText([]byte(raw)); err != nil {
+		return nil, true, wrapInvalidValue(configPath, goPath, err)
+	}
+	return ptr.Elem().Interface(), true, nil
 }
 
 // parsePrimitive handles string, bool, signed ints, unsigned ints, and floats.
+// Failure paths return ErrInvalidValue wrapped with the underlying strconv
+// error preserved via %w.
 func parsePrimitive(fieldType reflect.Type, raw, configPath, goPath string) (any, error) {
-	wrap := func(err error) error {
-		return fmt.Errorf("%w: config path %q (Go field %s): %v",
-			ErrUnsupportedType, configPath, goPath, err)
-	}
-
-	switch fieldType.Kind() { //nolint:exhaustive // remaining kinds are unsupported
+	switch fieldType.Kind() {
 	case reflect.String:
 		return raw, nil
-
 	case reflect.Bool:
 		v, err := strconv.ParseBool(raw)
 		if err != nil {
-			return nil, wrap(err)
+			return nil, wrapInvalidValue(configPath, goPath, err)
 		}
 		return v, nil
-
-	case reflect.Int:
-		v, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			return nil, wrap(err)
-		}
-		return int(v), nil
-	case reflect.Int8:
-		v, err := strconv.ParseInt(raw, 10, 8)
-		if err != nil {
-			return nil, wrap(err)
-		}
-		return int8(v), nil
-	case reflect.Int16:
-		v, err := strconv.ParseInt(raw, 10, 16)
-		if err != nil {
-			return nil, wrap(err)
-		}
-		return int16(v), nil
-	case reflect.Int32:
-		v, err := strconv.ParseInt(raw, 10, 32)
-		if err != nil {
-			return nil, wrap(err)
-		}
-		return int32(v), nil
-	case reflect.Int64:
-		v, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			return nil, wrap(err)
-		}
-		return int64(v), nil
-
-	case reflect.Uint:
-		v, err := strconv.ParseUint(raw, 10, 64)
-		if err != nil {
-			return nil, wrap(err)
-		}
-		return uint(v), nil
-	case reflect.Uint8:
-		v, err := strconv.ParseUint(raw, 10, 8)
-		if err != nil {
-			return nil, wrap(err)
-		}
-		return uint8(v), nil
-	case reflect.Uint16:
-		v, err := strconv.ParseUint(raw, 10, 16)
-		if err != nil {
-			return nil, wrap(err)
-		}
-		return uint16(v), nil
-	case reflect.Uint32:
-		v, err := strconv.ParseUint(raw, 10, 32)
-		if err != nil {
-			return nil, wrap(err)
-		}
-		return uint32(v), nil
-	case reflect.Uint64:
-		v, err := strconv.ParseUint(raw, 10, 64)
-		if err != nil {
-			return nil, wrap(err)
-		}
-		return uint64(v), nil
-
-	case reflect.Float32:
-		v, err := strconv.ParseFloat(raw, 32)
-		if err != nil {
-			return nil, wrap(err)
-		}
-		return float32(v), nil
-	case reflect.Float64:
-		v, err := strconv.ParseFloat(raw, 64)
-		if err != nil {
-			return nil, wrap(err)
-		}
-		return float64(v), nil
-
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return parseSignedInt(fieldType, raw, configPath, goPath)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return parseUnsignedInt(fieldType, raw, configPath, goPath)
+	case reflect.Float32, reflect.Float64:
+		return parseFloat(fieldType, raw, configPath, goPath)
 	default:
 		return nil, fmt.Errorf("%w: config path %q (Go field %s) has unsupported type %s",
 			ErrUnsupportedType, configPath, goPath, fieldType)
 	}
+}
+
+// intBits maps each signed-int Kind to the bit size strconv.ParseInt expects.
+var intBits = map[reflect.Kind]int{
+	reflect.Int:   64,
+	reflect.Int8:  8,
+	reflect.Int16: 16,
+	reflect.Int32: 32,
+	reflect.Int64: 64,
+}
+
+// uintBits maps each unsigned-int Kind to the bit size strconv.ParseUint expects.
+var uintBits = map[reflect.Kind]int{
+	reflect.Uint:   64,
+	reflect.Uint8:  8,
+	reflect.Uint16: 16,
+	reflect.Uint32: 32,
+	reflect.Uint64: 64,
+}
+
+func parseSignedInt(fieldType reflect.Type, raw, configPath, goPath string) (any, error) {
+	v, err := strconv.ParseInt(raw, 10, intBits[fieldType.Kind()])
+	if err != nil {
+		return nil, wrapInvalidValue(configPath, goPath, err)
+	}
+	out := reflect.New(fieldType).Elem()
+	out.SetInt(v)
+	return out.Interface(), nil
+}
+
+func parseUnsignedInt(fieldType reflect.Type, raw, configPath, goPath string) (any, error) {
+	v, err := strconv.ParseUint(raw, 10, uintBits[fieldType.Kind()])
+	if err != nil {
+		return nil, wrapInvalidValue(configPath, goPath, err)
+	}
+	out := reflect.New(fieldType).Elem()
+	out.SetUint(v)
+	return out.Interface(), nil
+}
+
+func parseFloat(fieldType reflect.Type, raw, configPath, goPath string) (any, error) {
+	bits := 64
+	if fieldType.Kind() == reflect.Float32 {
+		bits = 32
+	}
+	v, err := strconv.ParseFloat(raw, bits)
+	if err != nil {
+		return nil, wrapInvalidValue(configPath, goPath, err)
+	}
+	out := reflect.New(fieldType).Elem()
+	out.SetFloat(v)
+	return out.Interface(), nil
+}
+
+// wrapInvalidValue produces an error chain that satisfies both
+// errors.Is(err, ErrInvalidValue) and errors.As(err, &<underlyingType>).
+func wrapInvalidValue(configPath, goPath string, cause error) error {
+	return fmt.Errorf("%w: config path %q (Go field %s): %w",
+		ErrInvalidValue, configPath, goPath, cause)
 }
