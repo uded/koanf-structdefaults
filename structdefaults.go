@@ -6,6 +6,7 @@ package structdefaults
 
 import (
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 )
@@ -15,12 +16,18 @@ const (
 	defaultDefaultTag = "koanf-default"
 )
 
+// LookupFunc resolves an environment variable name to its value. Implementations
+// should return (value, true) when the variable is set (even to an empty string)
+// and ("", false) when it is unset. The default lookup is os.LookupEnv.
+type LookupFunc func(name string) (string, bool)
+
 // StructDefaults implements koanf.Provider by walking struct tags.
 type StructDefaults struct {
 	s          any
 	pathTag    string
 	defaultTag string
 	delim      string
+	lookup     LookupFunc
 }
 
 // Provider returns a StructDefaults provider using the conventional tag names
@@ -43,7 +50,19 @@ func ProviderWithTags(s any, pathTag, defaultTag, delim string) *StructDefaults 
 		pathTag:    pathTag,
 		defaultTag: defaultTag,
 		delim:      delim,
+		lookup:     os.LookupEnv,
 	}
+}
+
+// WithLookup overrides the env-var lookup function used to resolve ${VAR}
+// references in koanf-default tags. Pass nil to restore os.LookupEnv. Configure
+// before the first Read; the provider is otherwise read-only.
+func (p *StructDefaults) WithLookup(fn LookupFunc) *StructDefaults {
+	if fn == nil {
+		fn = os.LookupEnv
+	}
+	p.lookup = fn
+	return p
 }
 
 // ReadBytes is not supported. Returns ErrUnsupported.
@@ -62,11 +81,17 @@ func (p *StructDefaults) Read() (map[string]any, error) {
 		return nil, err
 	}
 
-	out := make(map[string]any)
-	if err := walk(v, "", "", out, p.pathTag, p.defaultTag, p.delim); err != nil {
+	w := &walker{
+		pathTag:    p.pathTag,
+		defaultTag: p.defaultTag,
+		delim:      p.delim,
+		lookup:     p.lookup,
+		out:        make(map[string]any),
+	}
+	if err := w.walk(v, "", ""); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return w.out, nil
 }
 
 // resolveInput validates that s is a non-nil pointer to a struct and returns
@@ -88,36 +113,40 @@ func resolveInput(s any) (reflect.Value, error) {
 	return v, nil
 }
 
-// walk recursively visits every field of the struct value v, collecting
-// defaults into out. configPath is the delim-joined path accumulated so far;
-// goPath is the dot-joined Go field path for error messages.
-func walk(v reflect.Value, configPath, goPath string, out map[string]any, pathTag, defaultTag, delim string) error {
+// walker carries the immutable per-Read configuration through the recursive
+// traversal. Holding state here keeps walk's signature small.
+type walker struct {
+	pathTag, defaultTag, delim string
+	lookup                     LookupFunc
+	out                        map[string]any
+}
+
+// walk recursively visits every field of the struct value v. configPath is
+// the delim-joined path accumulated so far; goPath is the dot-joined Go
+// field path used for error messages.
+func (w *walker) walk(v reflect.Value, configPath, goPath string) error {
 	t := v.Type()
 
 	for i := range t.NumField() {
 		field := t.Field(i)
 
 		// Respect koanf:"-" — skip the field entirely.
-		ptag := field.Tag.Get(pathTag)
+		ptag := field.Tag.Get(w.pathTag)
 		if ptag == "-" {
 			continue
 		}
 
-		// Build the config path segment for this field.
 		segment := pathSegment(field, ptag)
-
-		// Build the paths for this field.
-		cfgPath := joinPath(configPath, segment, delim)
+		cfgPath := joinPath(configPath, segment, w.delim)
 		gp := joinGoPath(goPath, field.Name)
 
-		// Anonymous embedded struct: squash unless it has an explicit koanf tag
+		// Anonymous embedded struct: squash unless it has an explicit path tag
 		// or it implements TextUnmarshaler (in which case it is a leaf).
 		if field.Anonymous && ptag == "" {
 			elemType, isStruct := derefToStruct(field.Type)
 			if isStruct && !isTextUnmarshaler(field.Type) {
-				// Squash: walk as if fields were on the parent, keeping parent paths.
 				tmp := reflect.New(elemType).Elem()
-				if err := walk(tmp, configPath, gp, out, pathTag, defaultTag, delim); err != nil {
+				if err := w.walk(tmp, configPath, gp); err != nil {
 					return err
 				}
 				continue
@@ -126,28 +155,34 @@ func walk(v reflect.Value, configPath, goPath string, out map[string]any, pathTa
 
 		// Recurse into struct or pointer-to-struct fields, but only when the
 		// type does not implement encoding.TextUnmarshaler — those are treated
-		// as opaque leaves parsed by parseValue (spec §6, rule 2).
+		// as opaque leaves parsed by parseValue.
 		elemType, isStruct := derefToStruct(field.Type)
 		if isStruct && !isTextUnmarshaler(field.Type) {
-			// Allocate a fresh zero value for traversal — never touch user input.
 			tmp := reflect.New(elemType).Elem()
-			if err := walk(tmp, cfgPath, gp, out, pathTag, defaultTag, delim); err != nil {
+			if err := w.walk(tmp, cfgPath, gp); err != nil {
 				return err
 			}
 			continue
 		}
 
 		// Leaf field: only emit if koanf-default tag is present.
-		rawDefault, hasDefault := field.Tag.Lookup(defaultTag)
+		rawDefault, hasDefault := field.Tag.Lookup(w.defaultTag)
 		if !hasDefault {
 			continue
 		}
 
-		parsed, err := parseValue(field.Type, rawDefault, cfgPath, gp)
+		// Substitute ${VAR} / ${VAR:-fallback} before type dispatch so the
+		// substitution is uniform across all field types.
+		expanded, err := substituteEnv(rawDefault, w.lookup)
+		if err != nil {
+			return fmt.Errorf("%w (config path %q, Go field %s)", err, cfgPath, gp)
+		}
+
+		parsed, err := parseValue(field.Type, expanded, cfgPath, gp)
 		if err != nil {
 			return err
 		}
-		emit(out, cfgPath, parsed, delim)
+		emit(w.out, cfgPath, parsed, w.delim)
 	}
 	return nil
 }
@@ -199,9 +234,8 @@ func joinGoPath(parent, child string) string {
 	return parent + "." + child
 }
 
-// derefToStruct dereferences a pointer type if needed and reports whether the
-// resulting type is a struct. Returns (elemType, true) for struct or
-// pointer-to-struct types, (t, false) otherwise.
+// derefToStruct dereferences a pointer type if needed and reports whether
+// the resulting type is a struct.
 func derefToStruct(t reflect.Type) (reflect.Type, bool) {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()

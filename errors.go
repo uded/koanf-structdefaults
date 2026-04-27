@@ -13,3 +13,8 @@ var ErrUnsupportedType = errors.New("structdefaults: unsupported field type")
 // ErrInvalidInput is returned by Read when the value passed to Provider or
 // ProviderWithTags is nil, a non-struct, or a nil pointer-to-struct.
 var ErrInvalidInput = errors.New("structdefaults: input must be a non-nil pointer to a struct")
+
+// ErrUnsetEnv is returned when a default value contains ${VAR} and the
+// referenced environment variable is unset with no fallback provided.
+// Use ${VAR:-} to opt into an empty-string fallback.
+var ErrUnsetEnv = errors.New("structdefaults: env var unset with no fallback")
