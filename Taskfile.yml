@@ -32,10 +32,16 @@ tasks:
       - go test -bench=. -benchmem ./...
 
   lint:
-    desc: Lint (vet + gofmt check)
+    desc: Lint (vet + gofmt check + golangci-lint)
     cmds:
       - go vet ./...
       - 'test -z "$(gofmt -l .)"'
+      - golangci-lint run
+
+  vuln:
+    desc: Run govulncheck against the module
+    cmds:
+      - go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   tidy:
     desc: Tidy module dependencies
@@ -43,7 +49,8 @@ tasks:
       - go mod tidy
 
   ci:
-    desc: Full CI pipeline
+    desc: Full CI pipeline (matches .github/workflows/ci.yml)
     cmds:
       - task: lint
       - task: test
+      - task: vuln

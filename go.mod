@@ -1,6 +1,6 @@
 module github.com/uded/koanf-structdefaults
 
-go 1.25
+go 1.23.0
 
 require (
 	github.com/knadh/koanf/providers/confmap v1.0.0
