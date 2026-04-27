@@ -1,5 +1,3 @@
-// Package structdefaults provides a koanf provider that reads koanf-default
-// struct tags and emits a flat map[string]any of parsed default values.
 package structdefaults
 
 import "errors"

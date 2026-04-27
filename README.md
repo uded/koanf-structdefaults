@@ -1,6 +1,6 @@
 # koanf-structdefaults
 
-A [koanf](https://github.com/knadh/koanf) provider that reads `koanf-default:"…"` struct tags and emits a flat `map[string]any` of parsed defaults — load it as the lowest-priority layer and let file, env, and flag providers override naturally.
+A [koanf](https://github.com/knadh/koanf) provider that reads `koanf-default:"…"` struct tags and emits a nested `map[string]any` of parsed defaults — load it as the lowest-priority layer and let file, env, and flag providers override naturally.
 
 ## Why
 
@@ -113,18 +113,20 @@ Empty-string for either tag falls back to the library default.
 
 ## Output shape
 
-`Read()` returns a flat `map[string]any` keyed by delim-joined paths:
+`Read()` returns a nested `map[string]any` whose tree shape mirrors the koanf path layout (split on the configured delim):
 
 ```go
 map[string]any{
-    "server.host":    "localhost",
-    "server.port":    8080,
-    "server.timeout": time.Duration(30 * time.Second),
-    "log_level":      "info",
+    "server": map[string]any{
+        "host":    "localhost",
+        "port":    8080,
+        "timeout": time.Duration(30 * time.Second),
+    },
+    "log_level": "info",
 }
 ```
 
-koanf flattens any provider's output during merge, so this is the natural shape — and it means **this module has zero production dependencies**.
+This matches what every other koanf provider emits and merges correctly with overrides from file, env, and flag layers. The module still has **zero production dependencies** — the nesting is built directly during the walk, no helper library needed.
 
 ## What it doesn't do
 

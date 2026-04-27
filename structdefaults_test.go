@@ -3,6 +3,7 @@ package structdefaults_test
 import (
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,10 +26,22 @@ func mustRead(t *testing.T, p *sd.StructDefaults) map[string]any {
 	return m
 }
 
-// getPath looks up a delim-joined key in the flat map produced by Read().
+// getPath traverses a nested map[string]any using a dot-separated key path.
+// Returns (value, true) if found, (nil, false) otherwise.
 func getPath(m map[string]any, path string) (any, bool) {
-	v, ok := m[path]
-	return v, ok
+	parts := strings.SplitN(path, ".", 2)
+	v, ok := m[parts[0]]
+	if !ok {
+		return nil, false
+	}
+	if len(parts) == 1 {
+		return v, true
+	}
+	nested, ok := v.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	return getPath(nested, parts[1])
 }
 
 // assertPath checks that m has the given nested path equal to want.
@@ -518,11 +531,20 @@ func TestKoanfIntegration(t *testing.T) {
 
 // ---- utility ----------------------------------------------------------------
 
-// flatKeys returns the keys of the flat map, useful for diagnostic messages.
-func flatKeys(m map[string]any, _ string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+// flatKeys returns all leaf keys in a nested map as dot-joined strings,
+// useful for diagnostic messages.
+func flatKeys(m map[string]any, prefix string) []string {
+	var out []string
+	for k, v := range m {
+		full := k
+		if prefix != "" {
+			full = prefix + "." + k
+		}
+		if nested, ok := v.(map[string]any); ok {
+			out = append(out, flatKeys(nested, full)...)
+		} else {
+			out = append(out, full)
+		}
 	}
 	return out
 }

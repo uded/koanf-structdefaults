@@ -1,12 +1,13 @@
 // Package structdefaults provides a koanf provider that reads koanf-default
-// struct tags and emits a flat map[string]any of default values keyed by their
-// delim-joined config paths. Load it as the first (lowest-priority) layer so
-// that file, env, and flag providers override it naturally.
+// struct tags and emits a nested map[string]any of default values whose tree
+// shape mirrors the koanf path layout. Load it as the first (lowest-priority)
+// layer so that file, env, and flag providers override it naturally.
 package structdefaults
 
 import (
 	"fmt"
 	"reflect"
+	"strings"
 )
 
 const (
@@ -50,10 +51,11 @@ func (p *StructDefaults) ReadBytes() ([]byte, error) {
 	return nil, ErrUnsupported
 }
 
-// Read walks the struct tags and returns a flat map[string]any keyed by
-// delim-joined config paths. Only fields with an explicit koanf-default tag
-// contribute entries (sparse output). Returns ErrInvalidInput if the stored
-// value is not a non-nil pointer to a struct.
+// Read walks the struct tags and returns a nested map[string]any whose tree
+// shape mirrors the koanf path layout (split on the configured delim). Only
+// fields with an explicit koanf-default tag contribute entries (sparse
+// output). Returns ErrInvalidInput if the stored value is not a non-nil
+// pointer to a struct.
 func (p *StructDefaults) Read() (map[string]any, error) {
 	v, err := resolveInput(p.s)
 	if err != nil {
@@ -145,9 +147,30 @@ func walk(v reflect.Value, configPath, goPath string, out map[string]any, pathTa
 		if err != nil {
 			return err
 		}
-		out[cfgPath] = parsed
+		emit(out, cfgPath, parsed, delim)
 	}
 	return nil
+}
+
+// emit places value at the delim-split path inside out, creating intermediate
+// nested maps as needed. koanf's merge expects nested maps; emitting flat
+// keys with delim characters in them collides non-deterministically with
+// nested inputs from other providers during koanf's final Flatten pass.
+func emit(out map[string]any, configPath string, value any, delim string) {
+	parts := strings.Split(configPath, delim)
+	cur := out
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			cur[part] = value
+			return
+		}
+		next, ok := cur[part].(map[string]any)
+		if !ok {
+			next = make(map[string]any)
+			cur[part] = next
+		}
+		cur = next
+	}
 }
 
 // pathSegment returns the config path segment for a field. It uses the pathTag
