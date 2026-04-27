@@ -1,6 +1,8 @@
 # koanf-structdefaults
 
-A [koanf](https://github.com/knadh/koanf) provider that reads `koanf-default:"…"` struct tags and emits a nested `map[string]any` of parsed defaults — load it as the lowest-priority layer and let file, env, and flag providers override naturally.
+A [koanf](https://github.com/knadh/koanf) provider that reads `koanf-default:"…"` struct tags and emits a nested `map[string]any` of parsed defaults. Load it as the lowest-priority layer and let file, env, and flag providers override naturally.
+
+Zero production dependencies. Distributed as a standalone Go module.
 
 ## Why
 
@@ -33,7 +35,7 @@ type Config struct {
 go get github.com/uded/koanf-structdefaults
 ```
 
-Requires Go 1.25+.
+Requires Go 1.23+.
 
 ## Usage
 
@@ -41,6 +43,7 @@ Requires Go 1.25+.
 package main
 
 import (
+    "log"
     "time"
 
     "github.com/knadh/koanf/parsers/yaml"
@@ -54,7 +57,7 @@ import (
 type Config struct {
     Server struct {
         Host    string        `koanf:"host"    koanf-default:"localhost"`
-        Port    int           `koanf:"port"    koanf-default:"8080"`
+        Port    int           `koanf:"port"    koanf-default:"${PORT:-8080}"`
         Timeout time.Duration `koanf:"timeout" koanf-default:"30s"`
     } `koanf:"server"`
     LogLevel string `koanf:"log_level" koanf-default:"info"`
@@ -64,18 +67,43 @@ func main() {
     k := koanf.New(".")
 
     // Layer 1 (lowest priority): declared defaults.
-    k.Load(structdefaults.Provider(&Config{}, "."), nil)
+    p, err := structdefaults.New(&Config{}, structdefaults.Options{Delim: "."})
+    if err != nil {
+        log.Fatal(err)
+    }
+    if err := k.Load(p, nil); err != nil {
+        log.Fatal(err)
+    }
     // Layer 2: file overrides defaults.
-    k.Load(file.Provider("config.yaml"), yaml.Parser())
+    _ = k.Load(file.Provider("config.yaml"), yaml.Parser())
     // Layer 3 (highest): env overrides everything.
-    k.Load(env.Provider("APP_", ".", nil), nil)
+    _ = k.Load(env.Provider("APP_", ".", nil), nil)
 
     var cfg Config
     if err := k.Unmarshal("", &cfg); err != nil {
-        panic(err)
+        log.Fatal(err)
     }
 }
 ```
+
+## Options
+
+```go
+type Options struct {
+    Delim      string    // required ("." for typical configs)
+    PathTag    string    // default: "koanf"
+    DefaultTag string    // default: "koanf-default"
+    Lookup     EnvLookup // default: os.LookupEnv
+    Strict     bool      // default: false
+}
+```
+
+| Field | Effect |
+|---|---|
+| `Delim` | Path separator. Empty value → `ErrInvalidConfig` from `New`. |
+| `PathTag` / `DefaultTag` | Override the tag names used to name fields and read defaults. Empty → library default. |
+| `Lookup` | Custom env-var resolver. Pass `nil` to use `os.LookupEnv`. Useful for hermetic tests, secret stores, or precedence layering. |
+| `Strict` | When `true`, `New` walks the entire struct eagerly and surfaces any error at construction time rather than at the first `Read`. |
 
 ## Supported field types
 
@@ -102,18 +130,76 @@ func main() {
 | `koanf-default:""` | empty-string default (only meaningful for `string`) |
 | `koanf-default:` absent | no entry emitted (output is sparse) |
 
-## Custom tag names
+## Environment variable substitution
+
+Tag values may include POSIX-style `${VAR}` and `${VAR:-fallback}` references. Substitution runs **before** type parsing, so it works for any field type:
 
 ```go
-// Read paths from `mapstructure:"…"` and defaults from `default:"…"`:
-p := structdefaults.ProviderWithTags(&Config{}, "mapstructure", "default", ".")
+type Config struct {
+    Host    string        `koanf:"host"    koanf-default:"${HOST:-localhost}"`
+    Port    int           `koanf:"port"    koanf-default:"${PORT:-8080}"`
+    Timeout time.Duration `koanf:"timeout" koanf-default:"${TIMEOUT:-30s}"`
+    Region  string        `koanf:"region"  koanf-default:"${REGION}"` // no fallback
+}
 ```
 
-Empty-string for either tag falls back to the library default.
+| Form | Behavior |
+|---|---|
+| `${VAR}` | Resolves `VAR`. If unset, returns `ErrUnsetEnv`. |
+| `${VAR:-fallback}` | Uses `VAR` if set; otherwise the literal `fallback` (which may be empty: `${VAR:-}`). |
+| `$$` … literal `$` | Not yet supported — request via issue if needed. |
+
+Substitution is **single-pass and non-recursive**: env-var values are not re-scanned for `${...}`. This is intentional — prevents indirect env-var resolution.
+
+### Custom lookup
+
+For hermetic tests or secret stores (Vault, AWS Secrets Manager), pass a custom `Lookup`:
+
+```go
+p, err := structdefaults.New(&cfg, structdefaults.Options{
+    Delim: ".",
+    Lookup: func(name string) (string, bool) {
+        return vaultClient.Get(name)
+    },
+})
+```
+
+### Security note
+
+Struct-tag values are **compiled into your binary** and visible in `strings ./binary`. Never embed secrets directly in `koanf-default:"…"` — use `${VAR}` substitution and resolve them from your environment or secret store at runtime. Errors from this library may include env-var **names** (not values); route library errors through your standard log-redaction pipeline.
+
+## Strict mode
+
+By default, parse errors and unset env vars surface from `Read()` at koanf load time. Set `Strict: true` to force eager validation at construction:
+
+```go
+p, err := structdefaults.New(&cfg, structdefaults.Options{
+    Delim:  ".",
+    Strict: true,
+})
+// err is non-nil if any default fails to parse, any env var is unset
+// without a fallback, or the struct contains a cyclic type.
+```
+
+`Strict` is a startup-time correctness gate: catches typos in tag values before the app starts serving traffic.
+
+## Errors
+
+All errors are sentinel-wrapped via `%w`; match with `errors.Is` or `errors.As`:
+
+| Sentinel | When |
+|---|---|
+| `ErrInvalidConfig` | `Options.Delim` is empty (returned from `New`). |
+| `ErrInvalidInput` | target is `nil`, a non-struct, or a nil pointer-to-struct (returned from `New`). |
+| `ErrCyclicType` | walker encountered a struct type that recursively references itself. |
+| `ErrInvalidValue` | a tag value cannot be parsed for an otherwise-supported type (e.g. `koanf-default:"8O8O"` on `int`). Use `errors.As` to recover the underlying `*strconv.NumError` etc. |
+| `ErrUnsupportedType` | the field's Go type cannot carry a default at all (slice, map, channel, func). Programmer error: fix the struct. |
+| `ErrUnsetEnv` | `${VAR}` reference with no fallback and the env var is unset. |
+| `ErrUnsupported` | returned from `ReadBytes()` (this provider is `Read()`-only). |
 
 ## Output shape
 
-`Read()` returns a nested `map[string]any` whose tree shape mirrors the koanf path layout (split on the configured delim):
+`Read()` returns a nested `map[string]any` whose tree shape mirrors the koanf path layout:
 
 ```go
 map[string]any{
@@ -126,11 +212,11 @@ map[string]any{
 }
 ```
 
-This matches what every other koanf provider emits and merges correctly with overrides from file, env, and flag layers. The module still has **zero production dependencies** — the nesting is built directly during the walk, no helper library needed.
+This matches what every other koanf provider emits and merges correctly with overrides from file, env, and flag layers.
 
 ## What it doesn't do
 
-- **Slice / map defaults.** Comma-split syntax has too many escaping pitfalls; for the rare slice/map default, build it via `confmap` or initialize the field directly. Future versions may add a structured syntax (e.g. `koanf-default-json:"[1,2,3]"`).
+- **Slice / map defaults.** Comma-split syntax has too many escaping pitfalls; for the rare slice/map default, build it via `confmap` or initialize the field directly. A future `koanf-default-json:"[1,2,3]"` tag is on the roadmap.
 - **Validation (`required:"…"`).** Different concern; out of scope.
 - **Mutating your input struct.** Read-only by design.
 

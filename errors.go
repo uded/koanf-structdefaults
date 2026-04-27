@@ -19,9 +19,13 @@ var ErrUnsupportedType = errors.New("structdefaults: unsupported field type")
 // error (*strconv.NumError, etc.).
 var ErrInvalidValue = errors.New("structdefaults: invalid default value")
 
-// ErrInvalidInput is returned by Read when the value passed to Provider or
-// ProviderWithTags is nil, a non-struct, or a nil pointer-to-struct.
+// ErrInvalidInput is returned when the target passed to New is nil, a
+// non-struct, or a nil pointer-to-struct.
 var ErrInvalidInput = errors.New("structdefaults: input must be a non-nil pointer to a struct")
+
+// ErrInvalidConfig is returned by New when the Options struct is invalid —
+// e.g. Delim is empty. This indicates a programmer error in the call site.
+var ErrInvalidConfig = errors.New("structdefaults: invalid Options")
 
 // ErrUnsetEnv is returned when a default value contains ${VAR} and the
 // referenced environment variable is unset with no fallback provided.

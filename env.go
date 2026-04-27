@@ -15,7 +15,7 @@ import (
 //
 // If a referenced variable is unset and no fallback is provided, the function
 // returns ErrUnsetEnv wrapped with the variable name.
-func substituteEnv(raw string, lookup func(string) (string, bool)) (string, error) {
+func substituteEnv(raw string, lookup EnvLookup) (string, error) {
 	if !strings.Contains(raw, "${") {
 		return raw, nil
 	}

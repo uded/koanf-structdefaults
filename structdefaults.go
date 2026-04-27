@@ -16,53 +16,86 @@ const (
 	defaultDefaultTag = "koanf-default"
 )
 
-// LookupFunc resolves an environment variable name to its value. Implementations
-// should return (value, true) when the variable is set (even to an empty string)
+// EnvLookup resolves an environment variable name to its value. Implementations
+// must return (value, true) when the variable is set (even to an empty string)
 // and ("", false) when it is unset. The default lookup is os.LookupEnv.
-type LookupFunc func(name string) (string, bool)
+//
+// Implementations must be safe for concurrent use; the provider holds a
+// reference and may call it from any goroutine that triggers a Read.
+type EnvLookup func(name string) (string, bool)
 
-// StructDefaults implements koanf.Provider by walking struct tags.
+// Options configures a StructDefaults provider. All fields are optional except
+// Delim. Zero values trigger sensible defaults documented per field.
+type Options struct {
+	// Delim is the path separator used both to interpret the path tag values
+	// and to nest entries in the output map. Required; empty Delim returns
+	// ErrInvalidConfig from New.
+	Delim string
+
+	// PathTag is the struct tag whose value names the config path segment for
+	// each field. Defaults to "koanf".
+	PathTag string
+
+	// DefaultTag is the struct tag whose value declares the field's default.
+	// Defaults to "koanf-default".
+	DefaultTag string
+
+	// Lookup resolves ${VAR} references found in DefaultTag values. Defaults
+	// to os.LookupEnv. Pass a custom function for hermetic tests, secret
+	// stores (Vault, AWS Secrets Manager), or precedence layering.
+	Lookup EnvLookup
+
+	// Strict, when true, eagerly walks the entire struct at construction time
+	// and surfaces any error (cyclic types, parse failures, unset env vars
+	// without fallback) from New rather than waiting for the first Read call.
+	Strict bool
+}
+
+// StructDefaults walks struct tags to produce a nested map of defaults
+// suitable for koanf.Load. It is immutable after construction; safe for
+// concurrent Read calls.
 type StructDefaults struct {
-	s          any
-	pathTag    string
-	defaultTag string
-	delim      string
-	lookup     LookupFunc
+	target any
+	opts   Options
 }
 
-// Provider returns a StructDefaults provider using the conventional tag names
-// ("koanf" for paths, "koanf-default" for defaults).
-func Provider(s any, delim string) *StructDefaults {
-	return ProviderWithTags(s, defaultPathTag, defaultDefaultTag, delim)
-}
+// New constructs a StructDefaults provider. It validates Options and the
+// target struct shape, applying defaults for any zero-valued option fields.
+// When Options.Strict is true, it additionally performs a full walk of the
+// target struct so that any default-parsing or env-substitution errors
+// surface immediately rather than at the first Read call.
+//
+// Returns ErrInvalidConfig if Options.Delim is empty, ErrInvalidInput if
+// target is not a non-nil pointer to a struct, or any error produced by an
+// eager Strict-mode walk (ErrCyclicType, ErrInvalidValue, ErrUnsetEnv,
+// ErrUnsupportedType).
+func New(target any, opts Options) (*StructDefaults, error) {
+	if opts.Delim == "" {
+		return nil, fmt.Errorf("%w: Options.Delim is required", ErrInvalidConfig)
+	}
+	if opts.PathTag == "" {
+		opts.PathTag = defaultPathTag
+	}
+	if opts.DefaultTag == "" {
+		opts.DefaultTag = defaultDefaultTag
+	}
+	if opts.Lookup == nil {
+		opts.Lookup = os.LookupEnv
+	}
 
-// ProviderWithTags returns a StructDefaults provider with caller-supplied tag
-// names. An empty string for either tag falls back to the library default.
-func ProviderWithTags(s any, pathTag, defaultTag, delim string) *StructDefaults {
-	if pathTag == "" {
-		pathTag = defaultPathTag
+	if _, err := resolveInput(target); err != nil {
+		return nil, err
 	}
-	if defaultTag == "" {
-		defaultTag = defaultDefaultTag
-	}
-	return &StructDefaults{
-		s:          s,
-		pathTag:    pathTag,
-		defaultTag: defaultTag,
-		delim:      delim,
-		lookup:     os.LookupEnv,
-	}
-}
 
-// WithLookup overrides the env-var lookup function used to resolve ${VAR}
-// references in koanf-default tags. Pass nil to restore os.LookupEnv. Configure
-// before the first Read; the provider is otherwise read-only.
-func (p *StructDefaults) WithLookup(fn LookupFunc) *StructDefaults {
-	if fn == nil {
-		fn = os.LookupEnv
+	p := &StructDefaults{target: target, opts: opts}
+
+	if opts.Strict {
+		if _, err := p.Read(); err != nil {
+			return nil, err
+		}
 	}
-	p.lookup = fn
-	return p
+
+	return p, nil
 }
 
 // ReadBytes is not supported. Returns ErrUnsupported.
@@ -71,21 +104,19 @@ func (p *StructDefaults) ReadBytes() ([]byte, error) {
 }
 
 // Read walks the struct tags and returns a nested map[string]any whose tree
-// shape mirrors the koanf path layout (split on the configured delim). Only
-// fields with an explicit koanf-default tag contribute entries (sparse
-// output). Returns ErrInvalidInput if the stored value is not a non-nil
-// pointer to a struct.
+// shape mirrors the koanf path layout (split on Options.Delim). Only fields
+// with an explicit DefaultTag contribute entries (sparse output).
 func (p *StructDefaults) Read() (map[string]any, error) {
-	v, err := resolveInput(p.s)
+	v, err := resolveInput(p.target)
 	if err != nil {
 		return nil, err
 	}
 
 	w := &walker{
-		pathTag:    p.pathTag,
-		defaultTag: p.defaultTag,
-		delim:      p.delim,
-		lookup:     p.lookup,
+		pathTag:    p.opts.PathTag,
+		defaultTag: p.opts.DefaultTag,
+		delim:      p.opts.Delim,
+		lookup:     p.opts.Lookup,
 		out:        make(map[string]any),
 		visiting:   make(map[reflect.Type]struct{}),
 	}
@@ -95,13 +126,13 @@ func (p *StructDefaults) Read() (map[string]any, error) {
 	return w.out, nil
 }
 
-// resolveInput validates that s is a non-nil pointer to a struct and returns
-// the dereferenced reflect.Value.
-func resolveInput(s any) (reflect.Value, error) {
-	if s == nil {
+// resolveInput validates that target is a non-nil pointer to a struct and
+// returns the dereferenced reflect.Value.
+func resolveInput(target any) (reflect.Value, error) {
+	if target == nil {
 		return reflect.Value{}, fmt.Errorf("%w: got nil", ErrInvalidInput)
 	}
-	v := reflect.ValueOf(s)
+	v := reflect.ValueOf(target)
 	if v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return reflect.Value{}, fmt.Errorf("%w: got nil pointer", ErrInvalidInput)
@@ -118,7 +149,7 @@ func resolveInput(s any) (reflect.Value, error) {
 // traversal. Holding state here keeps walk's signature small.
 type walker struct {
 	pathTag, defaultTag, delim string
-	lookup                     LookupFunc
+	lookup                     EnvLookup
 	out                        map[string]any
 	// visiting tracks struct types currently on the recursion stack for
 	// cycle detection — type Node struct { Next *Node } would otherwise
@@ -128,7 +159,7 @@ type walker struct {
 
 // walk recursively visits every field of the struct value v. configPath is
 // the delim-joined path accumulated so far; goPath is the dot-joined Go
-// field path used for error messages.
+// field path used in error messages.
 func (w *walker) walk(v reflect.Value, configPath, goPath string) error {
 	t := v.Type()
 
@@ -184,7 +215,7 @@ func (w *walker) walk(v reflect.Value, configPath, goPath string) error {
 			continue
 		}
 
-		// Leaf field: only emit if koanf-default tag is present.
+		// Leaf field: only emit if DefaultTag is present.
 		rawDefault, hasDefault := field.Tag.Lookup(w.defaultTag)
 		if !hasDefault {
 			continue
@@ -201,18 +232,19 @@ func (w *walker) walk(v reflect.Value, configPath, goPath string) error {
 		if err != nil {
 			return err
 		}
-		emit(w.out, cfgPath, parsed, w.delim)
+		w.emit(cfgPath, parsed)
 	}
 	return nil
 }
 
-// emit places value at the delim-split path inside out, creating intermediate
-// nested maps as needed. koanf's merge expects nested maps; emitting flat
-// keys with delim characters in them collides non-deterministically with
-// nested inputs from other providers during koanf's final Flatten pass.
-func emit(out map[string]any, configPath string, value any, delim string) {
-	parts := strings.Split(configPath, delim)
-	cur := out
+// emit places value at the delim-split path inside w.out, creating
+// intermediate nested maps as needed. koanf's merge expects nested maps;
+// emitting flat keys with delim characters in them collides
+// non-deterministically with nested inputs from other providers during
+// koanf's final Flatten pass.
+func (w *walker) emit(configPath string, value any) {
+	parts := strings.Split(configPath, w.delim)
+	cur := w.out
 	for i, part := range parts {
 		if i == len(parts)-1 {
 			cur[part] = value
@@ -227,8 +259,8 @@ func emit(out map[string]any, configPath string, value any, delim string) {
 	}
 }
 
-// pathSegment returns the config path segment for a field. It uses the pathTag
-// value when non-empty, otherwise falls back to the Go field name.
+// pathSegment returns the config path segment for a field. It uses the
+// pathTag value when non-empty, otherwise falls back to the Go field name.
 func pathSegment(field reflect.StructField, ptag string) string {
 	if ptag != "" {
 		return ptag

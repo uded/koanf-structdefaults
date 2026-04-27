@@ -2,7 +2,6 @@ package structdefaults
 
 import (
 	"errors"
-	"strings"
 	"testing"
 	"time"
 )
@@ -18,7 +17,7 @@ func TestSubstituteEnvUnit(t *testing.T) {
 		env        map[string]string
 		want       string
 		wantErrIs  error
-		wantErrMsg string
+		wantErrMsg string // substring match on the error string
 	}{
 		{
 			name:  "no_substitution",
@@ -99,7 +98,7 @@ func TestSubstituteEnvUnit(t *testing.T) {
 				if !errors.Is(err, tc.wantErrIs) {
 					t.Fatalf("err = %v, want errors.Is(%v)", err, tc.wantErrIs)
 				}
-				if tc.wantErrMsg != "" && err != nil && !strings.Contains(err.Error(), tc.wantErrMsg) {
+				if tc.wantErrMsg != "" && err != nil && !contains(err.Error(), tc.wantErrMsg) {
 					t.Errorf("err = %q, want substring %q", err.Error(), tc.wantErrMsg)
 				}
 				return
@@ -114,7 +113,20 @@ func TestSubstituteEnvUnit(t *testing.T) {
 	}
 }
 
-// ---- integration: env substitution applied through Provider.Read() ----------
+// ---- integration helpers ---------------------------------------------------
+
+// mustNewEnv constructs a non-strict provider with the conventional `.` delim
+// and a caller-supplied Lookup. Failing to construct fails the test.
+func mustNewEnv(t *testing.T, target any, lookup EnvLookup) *StructDefaults {
+	t.Helper()
+	p, err := New(target, Options{Delim: ".", Lookup: lookup})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return p
+}
+
+// ---- integration: env substitution applied through New + Read --------------
 
 type envCfg struct {
 	Server struct {
@@ -128,7 +140,7 @@ type envCfg struct {
 func TestEnvIntegration_FallbacksUsed(t *testing.T) {
 	t.Parallel()
 
-	p := Provider(&envCfg{}, ".").WithLookup(func(string) (string, bool) {
+	p := mustNewEnv(t, &envCfg{}, func(string) (string, bool) {
 		return "", false
 	})
 
@@ -148,7 +160,7 @@ func TestEnvIntegration_AllResolved(t *testing.T) {
 		"TIMEOUT": "1m",
 		"REGION":  "eu-west-1",
 	}
-	p := Provider(&envCfg{}, ".").WithLookup(func(name string) (string, bool) {
+	p := mustNewEnv(t, &envCfg{}, func(name string) (string, bool) {
 		v, ok := env[name]
 		return v, ok
 	})
@@ -177,7 +189,7 @@ func TestEnvIntegration_FallbacksWhenUnset(t *testing.T) {
 	t.Parallel()
 
 	// Only REGION is set; the others fall back.
-	p := Provider(&envCfg{}, ".").WithLookup(func(name string) (string, bool) {
+	p := mustNewEnv(t, &envCfg{}, func(name string) (string, bool) {
 		if name == "REGION" {
 			return "eu-west-1", true
 		}
@@ -207,7 +219,11 @@ func TestEnvIntegration_DefaultLookupIsOSEnv(t *testing.T) {
 	type cfg struct {
 		Host string `koanf:"host" koanf-default:"${STRUCTDEFAULTS_TEST_HOST}"`
 	}
-	p := Provider(&cfg{}, ".")
+	// Default Lookup is os.LookupEnv when Options.Lookup is nil.
+	p, err := New(&cfg{}, Options{Delim: "."})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	m, err := p.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
@@ -226,7 +242,7 @@ func TestEnvIntegration_ErrorWrappingIncludesPath(t *testing.T) {
 		} `koanf:"server"`
 	}
 
-	p := Provider(&cfg{}, ".").WithLookup(func(string) (string, bool) {
+	p := mustNewEnv(t, &cfg{}, func(string) (string, bool) {
 		return "", false
 	})
 	_, err := p.Read()
@@ -235,8 +251,19 @@ func TestEnvIntegration_ErrorWrappingIncludesPath(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, want := range []string{"UNSET_VAR", "server.host", "Server.Host"} {
-		if !strings.Contains(msg, want) {
+		if !contains(msg, want) {
 			t.Errorf("error %q missing substring %q", msg, want)
 		}
 	}
+}
+
+// ---- helpers ----------------------------------------------------------------
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

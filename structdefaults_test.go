@@ -27,6 +27,18 @@ func mustRead(t *testing.T, p *sd.StructDefaults) map[string]any {
 	return m
 }
 
+// mustNew constructs a provider with the conventional `.` delim, failing the
+// test if construction errors. Use the long form `sd.New(t, sd.Options{...})`
+// when the test exercises non-default options.
+func mustNew(t *testing.T, target any) *sd.StructDefaults {
+	t.Helper()
+	p, err := sd.New(target, sd.Options{Delim: "."})
+	if err != nil {
+		t.Fatalf("New(...) unexpected error: %v", err)
+	}
+	return p
+}
+
 // getPath traverses a nested map[string]any using a dot-separated key path.
 // Returns (value, true) if found, (nil, false) otherwise.
 func getPath(m map[string]any, path string) (any, bool) {
@@ -218,7 +230,7 @@ type CustomTagStruct struct {
 
 func TestScalars(t *testing.T) {
 	t.Parallel()
-	m := mustRead(t, sd.Provider(&ScalarDefaults{}, "."))
+	m := mustRead(t, mustNew(t, &ScalarDefaults{}))
 
 	cases := []struct {
 		key  string
@@ -251,12 +263,12 @@ func TestDuration(t *testing.T) {
 	t.Parallel()
 	t.Run("success", func(t *testing.T) {
 		t.Parallel()
-		m := mustRead(t, sd.Provider(&DurationStruct{}, "."))
+		m := mustRead(t, mustNew(t, &DurationStruct{}))
 		assertPath(t, m, "timeout", 30*time.Second)
 	})
 	t.Run("parse_error", func(t *testing.T) {
 		t.Parallel()
-		_, err := sd.Provider(&BadDuration{}, ".").Read()
+		_, err := mustNew(t, &BadDuration{}).Read()
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -270,7 +282,7 @@ func TestTextUnmarshaler(t *testing.T) {
 	t.Parallel()
 	t.Run("net.IP_value_receiver_via_pointer", func(t *testing.T) {
 		t.Parallel()
-		m := mustRead(t, sd.Provider(&IPStruct{}, "."))
+		m := mustRead(t, mustNew(t, &IPStruct{}))
 		got, ok := getPath(m, "addr")
 		if !ok {
 			t.Fatal("key 'addr' missing")
@@ -286,7 +298,7 @@ func TestTextUnmarshaler(t *testing.T) {
 	})
 	t.Run("custom_pointer_receiver", func(t *testing.T) {
 		t.Parallel()
-		m := mustRead(t, sd.Provider(&ColorStruct{}, "."))
+		m := mustRead(t, mustNew(t, &ColorStruct{}))
 		got, ok := getPath(m, "primary")
 		if !ok {
 			t.Fatal("key 'primary' missing")
@@ -303,7 +315,7 @@ func TestTextUnmarshaler(t *testing.T) {
 
 func TestNestedStructs(t *testing.T) {
 	t.Parallel()
-	m := mustRead(t, sd.Provider(&DeepNested{}, "."))
+	m := mustRead(t, mustNew(t, &DeepNested{}))
 
 	cases := []struct {
 		path string
@@ -325,7 +337,7 @@ func TestPointerToStruct(t *testing.T) {
 	t.Run("nil_pointer_field", func(t *testing.T) {
 		t.Parallel()
 		input := &WithPtr{Inner: nil}
-		m := mustRead(t, sd.Provider(input, "."))
+		m := mustRead(t, mustNew(t, input))
 		if input.Inner != nil {
 			t.Error("Read() mutated input: Inner should remain nil")
 		}
@@ -334,7 +346,7 @@ func TestPointerToStruct(t *testing.T) {
 	t.Run("non_nil_pointer_field", func(t *testing.T) {
 		t.Parallel()
 		input := &WithPtr{Inner: &PtrInner{X: 7}}
-		m := mustRead(t, sd.Provider(input, "."))
+		m := mustRead(t, mustNew(t, input))
 		// Default value, not the field's actual value.
 		assertPath(t, m, "inner.x", int(99))
 		if input.Inner.X != 7 {
@@ -347,7 +359,7 @@ func TestAnonymousEmbedded(t *testing.T) {
 	t.Parallel()
 	t.Run("squash", func(t *testing.T) {
 		t.Parallel()
-		m := mustRead(t, sd.Provider(&SquashParent{}, "."))
+		m := mustRead(t, mustNew(t, &SquashParent{}))
 		// ef should be at top level (squashed), not under an "Embedded" key.
 		if !hasPath(m, "ef") {
 			t.Error("expected 'ef' at top level (squash)")
@@ -358,7 +370,7 @@ func TestAnonymousEmbedded(t *testing.T) {
 	})
 	t.Run("named_embed_nests", func(t *testing.T) {
 		t.Parallel()
-		m := mustRead(t, sd.Provider(&NamedEmbedParent{}, "."))
+		m := mustRead(t, mustNew(t, &NamedEmbedParent{}))
 		// ef should be nested under "nested".
 		if !hasPath(m, "nested.ef") {
 			t.Errorf("expected 'nested.ef', got keys: %v", flatKeys(m, ""))
@@ -371,7 +383,7 @@ func TestAnonymousEmbedded(t *testing.T) {
 
 func TestSkipField(t *testing.T) {
 	t.Parallel()
-	m := mustRead(t, sd.Provider(&SkipField{}, "."))
+	m := mustRead(t, mustNew(t, &SkipField{}))
 	// Neither the Go field name nor any synthetic key should appear.
 	if hasPath(m, "skip") || hasPath(m, "Skip") {
 		t.Error("skipped field should not appear in output")
@@ -381,7 +393,7 @@ func TestSkipField(t *testing.T) {
 
 func TestMissingKoanfTag(t *testing.T) {
 	t.Parallel()
-	m := mustRead(t, sd.Provider(&NoKoanfTag{}, "."))
+	m := mustRead(t, mustNew(t, &NoKoanfTag{}))
 	got, ok := getPath(m, "GoName")
 	if !ok || got != "fallback" {
 		t.Errorf("expected m['GoName']='fallback', got %v (keys: %v)", got, flatKeys(m, ""))
@@ -390,7 +402,7 @@ func TestMissingKoanfTag(t *testing.T) {
 
 func TestEmptyStringDefault(t *testing.T) {
 	t.Parallel()
-	m := mustRead(t, sd.Provider(&EmptyStringDefault{}, "."))
+	m := mustRead(t, mustNew(t, &EmptyStringDefault{}))
 	got, ok := getPath(m, "s")
 	if !ok {
 		t.Fatal("key 's' missing — empty-string default must be emitted")
@@ -414,7 +426,7 @@ func TestParseErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := sd.Provider(tc.input, ".").Read()
+			_, err := mustNew(t, tc.input).Read()
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -430,7 +442,7 @@ func TestParseErrors(t *testing.T) {
 // errors.As, not just the ErrInvalidValue sentinel.
 func TestParseErrorPreservesUnderlying(t *testing.T) {
 	t.Parallel()
-	_, err := sd.Provider(&BadInt{}, ".").Read()
+	_, err := mustNew(t, &BadInt{}).Read()
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -448,7 +460,7 @@ func TestParseErrorPreservesUnderlying(t *testing.T) {
 
 func TestEmptyStruct(t *testing.T) {
 	t.Parallel()
-	m := mustRead(t, sd.Provider(&EmptyStruct{}, "."))
+	m := mustRead(t, mustNew(t, &EmptyStruct{}))
 	if len(m) != 0 {
 		t.Errorf("expected empty map, got %v", m)
 	}
@@ -458,7 +470,14 @@ func TestCustomTags(t *testing.T) {
 	t.Parallel()
 	t.Run("custom_path_and_default_tags", func(t *testing.T) {
 		t.Parallel()
-		p := sd.ProviderWithTags(&CustomTagStruct{}, "mypath", "mydefault", ".")
+		p, err := sd.New(&CustomTagStruct{}, sd.Options{
+			Delim:      ".",
+			PathTag:    "mypath",
+			DefaultTag: "mydefault",
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
 		m := mustRead(t, p)
 		assertPath(t, m, "host", "myhost")
 		assertPath(t, m, "port", int(9090))
@@ -466,7 +485,10 @@ func TestCustomTags(t *testing.T) {
 	t.Run("empty_string_falls_back_to_defaults", func(t *testing.T) {
 		t.Parallel()
 		// Empty string for either tag should fall back to the library defaults.
-		p := sd.ProviderWithTags(&ScalarDefaults{}, "", "", ".")
+		p, err := sd.New(&ScalarDefaults{}, sd.Options{Delim: ".", PathTag: "", DefaultTag: ""})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
 		m := mustRead(t, p)
 		if !hasPath(m, "s") {
 			t.Error("expected 's' key with default koanf tag fallback")
@@ -488,9 +510,10 @@ func TestInvalidInput(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := sd.Provider(tc.input, ".").Read()
+			// Invalid target now surfaces at New, not Read.
+			_, err := sd.New(tc.input, sd.Options{Delim: "."})
 			if err == nil {
-				t.Fatal("expected error, got nil")
+				t.Fatal("expected error from New, got nil")
 			}
 			if !errors.Is(err, sd.ErrInvalidInput) {
 				t.Errorf("expected ErrInvalidInput, got: %v", err)
@@ -501,7 +524,7 @@ func TestInvalidInput(t *testing.T) {
 
 func TestReadBytes(t *testing.T) {
 	t.Parallel()
-	_, err := sd.Provider(&EmptyStruct{}, ".").ReadBytes()
+	_, err := mustNew(t, &EmptyStruct{}).ReadBytes()
 	if !errors.Is(err, sd.ErrUnsupported) {
 		t.Errorf("expected ErrUnsupported, got: %v", err)
 	}
@@ -522,7 +545,7 @@ func TestKoanfIntegration(t *testing.T) {
 	k := koanf.New(".")
 
 	// Layer 1: struct defaults (lowest priority).
-	if err := k.Load(sd.Provider(&AppCfg{}, "."), nil); err != nil {
+	if err := k.Load(mustNew(t, &AppCfg{}), nil); err != nil {
 		t.Fatalf("load defaults: %v", err)
 	}
 
@@ -591,7 +614,7 @@ func TestCyclicType(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := sd.Provider(tc.input, ".").Read()
+			_, err := mustNew(t, tc.input).Read()
 			if !errors.Is(err, sd.ErrCyclicType) {
 				t.Fatalf("expected ErrCyclicType, got: %v", err)
 			}
@@ -604,13 +627,57 @@ func TestCyclicType(t *testing.T) {
 
 func TestNonCyclicDeepNesting(t *testing.T) {
 	t.Parallel()
-	m, err := sd.Provider(&chainL1{}, ".").Read()
+	m, err := mustNew(t, &chainL1{}).Read()
 	if err != nil {
 		t.Fatalf("acyclic deep nesting must not trip cycle guard: %v", err)
 	}
 	assertPath(t, m, "v", "l1")
 	assertPath(t, m, "down.v", "l2")
 	assertPath(t, m, "down.down.v", "l3")
+}
+
+// ---- Options validation ----------------------------------------------------
+
+func TestEmptyDelimErrors(t *testing.T) {
+	t.Parallel()
+	type cfg struct {
+		S string `koanf:"s" koanf-default:"x"`
+	}
+	_, err := sd.New(&cfg{}, sd.Options{Delim: ""})
+	if !errors.Is(err, sd.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig for empty delim, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Delim") {
+		t.Errorf("error should mention Delim: %v", err)
+	}
+}
+
+func TestStrictModeEager(t *testing.T) {
+	t.Parallel()
+	// Strict=true: parse failures surface from New, not Read.
+	type cfg struct {
+		N int `koanf:"n" koanf-default:"not-a-number"`
+	}
+	_, err := sd.New(&cfg{}, sd.Options{Delim: ".", Strict: true})
+	if !errors.Is(err, sd.ErrInvalidValue) {
+		t.Fatalf("Strict mode must surface ErrInvalidValue from New: got %v", err)
+	}
+}
+
+func TestNonStrictDefersErrors(t *testing.T) {
+	t.Parallel()
+	// Strict=false (default): bad defaults still construct; error surfaces at Read.
+	type cfg struct {
+		N int `koanf:"n" koanf-default:"not-a-number"`
+	}
+	p, err := sd.New(&cfg{}, sd.Options{Delim: "."})
+	if err != nil {
+		t.Fatalf("non-strict New must not error on bad defaults: %v", err)
+	}
+	_, err = p.Read()
+	if !errors.Is(err, sd.ErrInvalidValue) {
+		t.Errorf("expected ErrInvalidValue from Read, got: %v", err)
+	}
 }
 
 // ---- diagnostic helpers ----------------------------------------------------
