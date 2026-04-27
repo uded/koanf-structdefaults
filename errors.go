@@ -18,3 +18,8 @@ var ErrInvalidInput = errors.New("structdefaults: input must be a non-nil pointe
 // referenced environment variable is unset with no fallback provided.
 // Use ${VAR:-} to opt into an empty-string fallback.
 var ErrUnsetEnv = errors.New("structdefaults: env var unset with no fallback")
+
+// ErrCyclicType is returned when the walker encounters a struct type that
+// recursively references itself (directly or transitively). Loading defaults
+// for such a type would cause unbounded recursion at startup.
+var ErrCyclicType = errors.New("structdefaults: cyclic struct type")

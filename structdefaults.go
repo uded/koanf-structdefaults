@@ -87,6 +87,7 @@ func (p *StructDefaults) Read() (map[string]any, error) {
 		delim:      p.delim,
 		lookup:     p.lookup,
 		out:        make(map[string]any),
+		visiting:   make(map[reflect.Type]struct{}),
 	}
 	if err := w.walk(v, "", ""); err != nil {
 		return nil, err
@@ -119,6 +120,10 @@ type walker struct {
 	pathTag, defaultTag, delim string
 	lookup                     LookupFunc
 	out                        map[string]any
+	// visiting tracks struct types currently on the recursion stack for
+	// cycle detection — type Node struct { Next *Node } would otherwise
+	// recurse forever.
+	visiting map[reflect.Type]struct{}
 }
 
 // walk recursively visits every field of the struct value v. configPath is
@@ -126,6 +131,20 @@ type walker struct {
 // field path used for error messages.
 func (w *walker) walk(v reflect.Value, configPath, goPath string) error {
 	t := v.Type()
+
+	// Cycle guard: two values of the same Go type share an identical
+	// reflect.Type, so this catches both direct self-reference (Node.Next *Node)
+	// and mutual recursion (A->B->A).
+	if _, cycling := w.visiting[t]; cycling {
+		path := configPath
+		if path == "" {
+			path = "<root>"
+		}
+		return fmt.Errorf("%w: %s (config path %q, Go field %s)",
+			ErrCyclicType, t, path, goPath)
+	}
+	w.visiting[t] = struct{}{}
+	defer delete(w.visiting, t)
 
 	for i := range t.NumField() {
 		field := t.Field(i)

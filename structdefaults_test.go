@@ -531,6 +531,68 @@ func TestKoanfIntegration(t *testing.T) {
 
 // ---- utility ----------------------------------------------------------------
 
+// ---- cycle guard -----------------------------------------------------------
+
+type cyclicNode struct {
+	Name string      `koanf:"name" koanf-default:"x"`
+	Next *cyclicNode `koanf:"next"`
+}
+
+type cyclicTree struct {
+	Name  string      `koanf:"name" koanf-default:"root"`
+	Left  *cyclicTree `koanf:"left"`
+	Right *cyclicTree `koanf:"right"`
+}
+
+// Three distinct types chained linearly — deep but acyclic.
+type chainL1 struct {
+	V    string  `koanf:"v" koanf-default:"l1"`
+	Down chainL2 `koanf:"down"`
+}
+type chainL2 struct {
+	V    string   `koanf:"v" koanf-default:"l2"`
+	Down *chainL3 `koanf:"down"`
+}
+type chainL3 struct {
+	V string `koanf:"v" koanf-default:"l3"`
+}
+
+func TestCyclicType(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		input any
+	}{
+		{"linked_list_self_ref", &cyclicNode{}},
+		{"tree_self_ref", &cyclicTree{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := sd.Provider(tc.input, ".").Read()
+			if !errors.Is(err, sd.ErrCyclicType) {
+				t.Fatalf("expected ErrCyclicType, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "config path") {
+				t.Errorf("error missing config path context: %v", err)
+			}
+		})
+	}
+}
+
+func TestNonCyclicDeepNesting(t *testing.T) {
+	t.Parallel()
+	m, err := sd.Provider(&chainL1{}, ".").Read()
+	if err != nil {
+		t.Fatalf("acyclic deep nesting must not trip cycle guard: %v", err)
+	}
+	assertPath(t, m, "v", "l1")
+	assertPath(t, m, "down.v", "l2")
+	assertPath(t, m, "down.down.v", "l3")
+}
+
+// ---- diagnostic helpers ----------------------------------------------------
+
 // flatKeys returns all leaf keys in a nested map as dot-joined strings,
 // useful for diagnostic messages.
 func flatKeys(m map[string]any, prefix string) []string {
