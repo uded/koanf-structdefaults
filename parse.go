@@ -138,8 +138,14 @@ func parseFloat(fieldType reflect.Type, raw, configPath, goPath string) (any, er
 }
 
 // wrapInvalidValue produces an error chain that satisfies both
-// errors.Is(err, ErrInvalidValue) and errors.As(err, &<underlyingType>).
+// errors.Is(err, ErrInvalidValue) and errors.As(err, &<underlyingType>),
+// while ensuring the surface Error() string does not echo the raw
+// post-substitution value. Without redaction, a default like
+// koanf-default:"${DB_PASSWORD}" on a typed field would surface the
+// resolved secret through err.Error(), violating the README's contract
+// that errors expose env-var names but not values. See redactCause for
+// the redaction strategy.
 func wrapInvalidValue(configPath, goPath string, cause error) error {
 	return fmt.Errorf("%w: config path %q (Go field %s): %w",
-		ErrInvalidValue, configPath, goPath, cause)
+		ErrInvalidValue, configPath, goPath, redactCause(cause))
 }

@@ -439,7 +439,9 @@ func TestParseErrors(t *testing.T) {
 
 // TestParseErrorPreservesUnderlying verifies that the %w error chain produced
 // by parsePrimitive lets callers reach the underlying strconv error via
-// errors.As, not just the ErrInvalidValue sentinel.
+// errors.As, not just the ErrInvalidValue sentinel — AND that the raw input
+// value has been stripped from the wrapped *strconv.NumError so secrets do
+// not leak through the error surface.
 func TestParseErrorPreservesUnderlying(t *testing.T) {
 	t.Parallel()
 	_, err := mustNew(t, &BadInt{}).Read()
@@ -453,8 +455,47 @@ func TestParseErrorPreservesUnderlying(t *testing.T) {
 	if !errors.As(err, &numErr) {
 		t.Fatalf("errors.As(err, *strconv.NumError) failed: %v", err)
 	}
-	if numErr.Num != "8O8O" {
-		t.Errorf("strconv.NumError.Num = %q, want %q", numErr.Num, "8O8O")
+	if numErr.Num != "" {
+		t.Errorf("strconv.NumError.Num = %q, want empty (value should be redacted)", numErr.Num)
+	}
+	if numErr.Func == "" {
+		t.Errorf("strconv.NumError.Func should be preserved, got empty")
+	}
+	if strings.Contains(err.Error(), "8O8O") {
+		t.Errorf("err.Error() leaked raw input value: %q", err.Error())
+	}
+}
+
+// TestParseErrorRedactsEnvValue verifies the security contract that values
+// resolved from ${VAR} substitution do not leak into err.Error() when the
+// resulting string fails to parse for the target field's type. This is the
+// realistic failure mode for koanf-default:"${DB_PASSWORD}" or similar
+// secret-bearing defaults bound to typed fields.
+func TestParseErrorRedactsEnvValue(t *testing.T) {
+	t.Parallel()
+	type secretCfg struct {
+		Port int `koanf:"port" koanf-default:"${SUPER_SECRET}"`
+	}
+	const secret = "p@ssw0rd-not-an-int-AB123"
+	lookup := func(name string) (string, bool) {
+		if name == "SUPER_SECRET" {
+			return secret, true
+		}
+		return "", false
+	}
+	p, err := sd.New(&secretCfg{}, sd.Options{Delim: ".", Lookup: lookup})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Read()
+	if err == nil {
+		t.Fatal("expected parse error, got nil")
+	}
+	if !errors.Is(err, sd.ErrInvalidValue) {
+		t.Fatalf("want ErrInvalidValue, got %v", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("err.Error() leaked secret %q: full message = %q", secret, err.Error())
 	}
 }
 
