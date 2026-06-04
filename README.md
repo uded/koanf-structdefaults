@@ -118,7 +118,7 @@ type Options struct {
 | `Delim` | Path separator. Empty value → `ErrInvalidConfig` from `New`. |
 | `PathTag` / `DefaultTag` | Override the tag names used to name fields and read defaults. Empty → library default. |
 | `Lookup` | Custom env-var resolver. Pass `nil` to use `os.LookupEnv`. Useful for hermetic tests, secret stores, or precedence layering. |
-| `Strict` | When `true`, `New` walks the entire struct eagerly and surfaces any error at construction time rather than at the first `Read`. |
+| `Strict` | When `true`, `New` walks the entire struct eagerly, surfaces every error as a single `errors.Join` (so one boot diagnoses every misconfiguration at once), and caches the validated map. Subsequent `Read` calls return the cached map — Strict treats the configuration as frozen at construction time and ignores later env-var changes. |
 
 ## Supported field types
 
@@ -144,6 +144,8 @@ type Options struct {
 | `koanf-default:"value"` | declared default for this field |
 | `koanf-default:""` | empty-string default (only meaningful for `string`) |
 | `koanf-default:` absent | no entry emitted (output is sparse) |
+
+Sparse output matters because koanf merges providers by key: an explicit `nil` or zero value from this layer would shadow a real value supplied later by a file, env, or flag provider. Omitting the key entirely lets the next layer fill in unambiguously.
 
 ## Environment variable substitution
 
@@ -185,18 +187,22 @@ Struct-tag values are **compiled into your binary** and visible in `strings ./bi
 
 ## Strict mode
 
-By default, parse errors and unset env vars surface from `Read()` at koanf load time. Set `Strict: true` to force eager validation at construction:
+By default, parse errors and unset env vars surface from `Read()` at koanf load time (fail-fast on first encountered). Set `Strict: true` to force eager validation at construction:
 
 ```go
 p, err := structdefaults.New(&cfg, structdefaults.Options{
     Delim:  ".",
     Strict: true,
 })
-// err is non-nil if any default fails to parse, any env var is unset
-// without a fallback, or the struct contains a cyclic type.
+// err is errors.Join of every problem found — parse failures, unset env
+// vars without fallback, invalid tags. errors.Is(err, ErrInvalidValue),
+// errors.Is(err, ErrUnsetEnv), etc. all descend through the join.
+// Cyclic types still fail-fast (continuing past a cycle is unsafe).
 ```
 
-`Strict` is a startup-time correctness gate: catches typos in tag values before the app starts serving traffic.
+`Strict` is a startup-time correctness gate: catches every typo in tag values in a single boot rather than requiring N restarts to fix N problems.
+
+**Frozen semantics.** When Strict is true, `New` caches the validated map and every subsequent `Read` returns that same instance — env-var changes after construction are deliberately ignored. Callers must not mutate the returned map. Use non-Strict mode if you need each `Read` to re-resolve the current env state.
 
 ## Errors
 

@@ -17,12 +17,23 @@ const (
 	defaultDefaultTag = "koanf-default"
 )
 
-// EnvLookup resolves an environment variable name to its value. Implementations
-// must return (value, true) when the variable is set (even to an empty string)
-// and ("", false) when it is unset. The default lookup is os.LookupEnv.
+// EnvLookup resolves an environment variable name to its value. It is
+// called once per ${VAR} reference found in koanf-default tag values
+// during a walk; the resolved value substitutes in before the per-type
+// parser sees it. See the README's "Environment variable substitution"
+// section for the full ${VAR} / ${VAR:-fallback} grammar.
+//
+// Return (value, true) when the variable is set (even to an empty string)
+// and ("", false) when it is unset. The default is os.LookupEnv. Custom
+// lookups commonly target hermetic tests, secret stores (Vault, AWS
+// Secrets Manager), or precedence layering.
 //
 // Implementations must be safe for concurrent use; the provider holds a
 // reference and may call it from any goroutine that triggers a Read.
+// Implementations that panic are recovered and surfaced as
+// ErrLookupPanic, but for robust error reporting prefer to recover
+// internally and return ("", false) on transient failures so callers
+// see the standard ErrUnsetEnv path.
 type EnvLookup func(name string) (string, bool)
 
 // Options configures a StructDefaults provider. All fields are optional except
