@@ -44,3 +44,11 @@ var ErrCyclicType = errors.New("structdefaults: cyclic struct type")
 // (Vault, AWS Secrets Manager, etc.) from a missing variable
 // (ErrUnsetEnv).
 var ErrLookupPanic = errors.New("structdefaults: env lookup panicked")
+
+// ErrInvalidTag is returned when a struct tag value cannot be used as a
+// path segment — currently because it contains Options.Delim, which
+// would silently create unintended nesting levels in the output map and
+// collide non-deterministically with sibling fields. Fix the struct's
+// koanf:"…" tag to use a single segment per field; if you need a nested
+// path use one field per level.
+var ErrInvalidTag = errors.New("structdefaults: invalid struct tag")

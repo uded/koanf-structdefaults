@@ -187,8 +187,12 @@ func (w *walker) walk(v reflect.Value, configPath, goPath string) error {
 		}
 
 		segment := pathSegment(field, ptag)
-		cfgPath := joinPath(configPath, segment, w.delim)
 		gp := joinGoPath(goPath, field.Name)
+		if strings.Contains(segment, w.delim) {
+			return fmt.Errorf("%w: tag value %q contains delim %q (Go field %s)",
+				ErrInvalidTag, segment, w.delim, gp)
+		}
+		cfgPath := joinPath(configPath, segment, w.delim)
 
 		// Recurse into struct or pointer-to-struct fields unless they implement
 		// encoding.TextUnmarshaler (those are leaves parsed by parseValue).

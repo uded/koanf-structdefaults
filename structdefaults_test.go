@@ -412,6 +412,31 @@ func TestEmptyStringDefault(t *testing.T) {
 	}
 }
 
+// TestDelimInTagRejected verifies that a tag value containing Options.Delim
+// returns ErrInvalidTag rather than silently nesting under the delim
+// boundaries. Without this validation a tag like `koanf:"foo.bar"` with
+// Delim="." would produce an unintended foo→bar tree fragment that
+// collides with sibling fields.
+func TestDelimInTagRejected(t *testing.T) {
+	t.Parallel()
+	type bad struct {
+		X int `koanf:"foo.bar" koanf-default:"42"`
+	}
+	_, err := mustNew(t, &bad{}).Read()
+	if err == nil {
+		t.Fatal("expected ErrInvalidTag, got nil")
+	}
+	if !errors.Is(err, sd.ErrInvalidTag) {
+		t.Errorf("want ErrInvalidTag, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "foo.bar") {
+		t.Errorf("error should name the offending tag value, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "X") {
+		t.Errorf("error should name the Go field, got %q", err.Error())
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
