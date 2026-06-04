@@ -42,7 +42,10 @@ func substituteEnv(raw string, lookup EnvLookup) (string, error) {
 				continue
 			}
 
-			val, ok := lookup(name)
+			val, ok, err := safeLookup(lookup, name)
+			if err != nil {
+				return "", err
+			}
 			switch {
 			case ok:
 				b.WriteString(val)
@@ -59,6 +62,27 @@ func substituteEnv(raw string, lookup EnvLookup) (string, error) {
 	}
 
 	return b.String(), nil
+}
+
+// safeLookup calls lookup(name) and converts any panic into an error so
+// a misbehaving custom EnvLookup (e.g. a Vault or AWS Secrets Manager
+// adapter that panics on a nil-map dereference or a closed-channel
+// write during transient failure) does not crash the caller's process.
+// Honors Read's (map, error) return contract.
+//
+// The recovered panic value is interpolated into the error message via
+// %v — implementations whose panic values may contain sensitive data
+// should arrange to recover internally and return an error instead.
+func safeLookup(lookup EnvLookup, name string) (val string, ok bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w resolving %s: %v", ErrLookupPanic, name, r)
+			val = ""
+			ok = false
+		}
+	}()
+	val, ok = lookup(name)
+	return val, ok, nil
 }
 
 // splitVarSpec parses the contents of a ${...} block. Returns

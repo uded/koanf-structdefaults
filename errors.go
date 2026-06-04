@@ -36,3 +36,11 @@ var ErrUnsetEnv = errors.New("structdefaults: env var unset with no fallback")
 // recursively references itself (directly or transitively). Loading defaults
 // for such a type would cause unbounded recursion at startup.
 var ErrCyclicType = errors.New("structdefaults: cyclic struct type")
+
+// ErrLookupPanic is returned when a custom EnvLookup implementation panics
+// during ${VAR} resolution. The library converts the panic into an error
+// to honor Read's (map, error) return contract. Use
+// errors.Is(err, ErrLookupPanic) to distinguish a misbehaving adapter
+// (Vault, AWS Secrets Manager, etc.) from a missing variable
+// (ErrUnsetEnv).
+var ErrLookupPanic = errors.New("structdefaults: env lookup panicked")

@@ -2,6 +2,7 @@ package structdefaults
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -254,6 +255,31 @@ func TestEnvIntegration_ErrorWrappingIncludesPath(t *testing.T) {
 		if !contains(msg, want) {
 			t.Errorf("error %q missing substring %q", msg, want)
 		}
+	}
+}
+
+// TestEnvLookup_PanicConvertedToError verifies that a custom EnvLookup
+// that panics (e.g. a Vault/AWS Secrets Manager adapter crashing during
+// transient network failure) is recovered into a normal error rather
+// than crashing the caller's process. Without this, Read's (map, error)
+// contract is silently broken.
+func TestEnvLookup_PanicConvertedToError(t *testing.T) {
+	t.Parallel()
+	type cfg struct {
+		Name string `koanf:"name" koanf-default:"${WHATEVER}"`
+	}
+	panicking := func(string) (string, bool) {
+		panic("vault transport closed")
+	}
+	_, err := mustNewEnv(t, &cfg{}, panicking).Read()
+	if err == nil {
+		t.Fatal("expected error from panicking lookup, got nil")
+	}
+	if !errors.Is(err, ErrLookupPanic) {
+		t.Errorf("want ErrLookupPanic, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "WHATEVER") {
+		t.Errorf("err.Error() should name the env var, got %q", err.Error())
 	}
 }
 
