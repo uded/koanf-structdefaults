@@ -442,6 +442,7 @@ func TestDelimInTagRejected(t *testing.T) {
 //   - duplicate-final: two fields contribute the same full path.
 //   - leaf-then-nest: a primitive field's path is a prefix of a later
 //     sub-struct's path.
+//
 // Both shapes return ErrInvalidTag; the underlying bug is a struct
 // definition mistake (overlapping path-tags) and the error message names
 // the offending path.
