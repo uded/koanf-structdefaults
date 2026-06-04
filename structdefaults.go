@@ -190,26 +190,26 @@ func (w *walker) walk(v reflect.Value, configPath, goPath string) error {
 		cfgPath := joinPath(configPath, segment, w.delim)
 		gp := joinGoPath(goPath, field.Name)
 
-		// Anonymous embedded struct: squash unless it has an explicit path tag
-		// or it implements TextUnmarshaler (in which case it is a leaf).
-		if field.Anonymous && ptag == "" {
-			elemType, isStruct := derefToStruct(field.Type)
-			if isStruct && !isTextUnmarshaler(field.Type) {
-				tmp := reflect.New(elemType).Elem()
-				if err := w.walk(tmp, configPath, gp); err != nil {
-					return err
-				}
-				continue
-			}
-		}
-
-		// Recurse into struct or pointer-to-struct fields, but only when the
-		// type does not implement encoding.TextUnmarshaler — those are treated
-		// as opaque leaves parsed by parseValue.
+		// Recurse into struct or pointer-to-struct fields unless they implement
+		// encoding.TextUnmarshaler (those are leaves parsed by parseValue).
+		// Anonymous embedded fields without an explicit path tag squash into
+		// the parent path; everything else nests under cfgPath.
 		elemType, isStruct := derefToStruct(field.Type)
 		if isStruct && !isTextUnmarshaler(field.Type) {
-			tmp := reflect.New(elemType).Elem()
-			if err := w.walk(tmp, cfgPath, gp); err != nil {
+			recursePath := cfgPath
+			if field.Anonymous && ptag == "" {
+				recursePath = configPath
+			}
+			// For non-pointer struct fields the value is already
+			// materialized in v.Field(i); only pointer fields need a
+			// fresh zero instance because the original pointer may be nil.
+			var sub reflect.Value
+			if field.Type.Kind() == reflect.Pointer {
+				sub = reflect.New(elemType).Elem()
+			} else {
+				sub = v.Field(i)
+			}
+			if err := w.walk(sub, recursePath, gp); err != nil {
 				return err
 			}
 			continue
