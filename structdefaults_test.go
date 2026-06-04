@@ -445,6 +445,71 @@ func TestDelimInTagRejected(t *testing.T) {
 // Both shapes return ErrInvalidTag; the underlying bug is a struct
 // definition mistake (overlapping path-tags) and the error message names
 // the offending path.
+// TestInterfaceFieldUnsupported verifies that an interface{}-typed field
+// carrying a koanf-default tag surfaces ErrUnsupportedType, since the
+// library cannot pick a concrete type to parse the default into.
+func TestInterfaceFieldUnsupported(t *testing.T) {
+	t.Parallel()
+	type bad struct {
+		X any `koanf:"x" koanf-default:"anything"`
+	}
+	_, err := mustNew(t, &bad{}).Read()
+	if err == nil {
+		t.Fatal("expected ErrUnsupportedType, got nil")
+	}
+	if !errors.Is(err, sd.ErrUnsupportedType) {
+		t.Errorf("want ErrUnsupportedType, got %v", err)
+	}
+}
+
+// TestAnonymousPointerEmbed verifies that an anonymous embedded *T squashes
+// into the parent path just like an anonymous embedded T. The walker
+// allocates a fresh zero instance via reflect.New so the original pointer
+// may safely be nil at construction time — idiomatic for *sync.Mutex,
+// *http.Request, and similar embeds.
+func TestAnonymousPointerEmbed(t *testing.T) {
+	t.Parallel()
+	type Inner struct {
+		Port int `koanf:"port" koanf-default:"8080"`
+	}
+	type Parent struct {
+		*Inner
+	}
+	m := mustRead(t, mustNew(t, &Parent{}))
+	got, ok := getPath(m, "port")
+	if !ok {
+		t.Fatalf("expected squashed key 'port' at root, got %v", m)
+	}
+	if got != 8080 {
+		t.Errorf("port: got %v (%T), want 8080", got, got)
+	}
+}
+
+// TestEmptyDefaultOnNonStringTypeRejected verifies that koanf-default:""
+// on a typed field returns an explanatory ErrInvalidValue rather than the
+// generic strconv-style parse failure. Empty defaults are only meaningful
+// for string fields; on any other primitive, ints, durations, etc., the
+// user almost certainly meant "no default" and should omit the tag.
+func TestEmptyDefaultOnNonStringTypeRejected(t *testing.T) {
+	t.Parallel()
+	type bad struct {
+		Port int `koanf:"port" koanf-default:""`
+	}
+	_, err := mustNew(t, &bad{}).Read()
+	if err == nil {
+		t.Fatal("expected ErrInvalidValue, got nil")
+	}
+	if !errors.Is(err, sd.ErrInvalidValue) {
+		t.Errorf("want ErrInvalidValue, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "empty default") {
+		t.Errorf("error should explain the empty-default condition, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "omit") {
+		t.Errorf("error should suggest the remediation (omit the tag), got %q", err.Error())
+	}
+}
+
 func TestEmitDetectsCollidingPaths(t *testing.T) {
 	t.Parallel()
 	t.Run("duplicate_final_path", func(t *testing.T) {

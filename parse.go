@@ -27,6 +27,16 @@ var (
 // (programmer error). Underlying parse errors are preserved via %w so
 // errors.As(err, &target) reaches them.
 func parseValue(fieldType reflect.Type, raw, configPath, goPath string) (any, error) {
+	// Empty default on a non-string typed field is almost always a mistake
+	// (the user wrote koanf-default:"" intending "no default" but got an
+	// unparseable empty string). Intercept with a clearer message before
+	// the downstream parser produces a generic "parse failed" — but allow
+	// TextUnmarshaler implementations to decide for themselves.
+	if raw == "" && fieldType.Kind() != reflect.String && !isTextUnmarshaler(fieldType) {
+		return nil, fmt.Errorf("%w: empty default value is not valid for type %s (config path %q, Go field %s); omit the koanf-default tag to skip this field",
+			ErrInvalidValue, fieldType, configPath, goPath)
+	}
+
 	if fieldType == durationType {
 		d, err := time.ParseDuration(raw)
 		if err != nil {
