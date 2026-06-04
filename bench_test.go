@@ -30,14 +30,14 @@ type benchDeepL3 struct {
 }
 
 type benchDeepL2 struct {
-	Name  string     `koanf:"name"  koanf-default:"middle"`
-	Count int        `koanf:"count" koanf-default:"7"`
+	Name  string      `koanf:"name"  koanf-default:"middle"`
+	Count int         `koanf:"count" koanf-default:"7"`
 	Inner benchDeepL3 `koanf:"inner"`
 }
 
 type benchDeepL1 struct {
-	Title string       `koanf:"title" koanf-default:"top"`
-	Level benchDeepL2  `koanf:"level"`
+	Title string      `koanf:"title" koanf-default:"top"`
+	Level benchDeepL2 `koanf:"level"`
 }
 
 // benchEnvSubst has several fields using ${VAR:-fallback} syntax.  The

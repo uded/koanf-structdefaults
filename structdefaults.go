@@ -5,6 +5,7 @@
 package structdefaults
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -45,18 +46,36 @@ type Options struct {
 	// stores (Vault, AWS Secrets Manager), or precedence layering.
 	Lookup EnvLookup
 
-	// Strict, when true, eagerly walks the entire struct at construction time
-	// and surfaces any error (cyclic types, parse failures, unset env vars
-	// without fallback) from New rather than waiting for the first Read call.
+	// Strict, when true, eagerly walks the entire struct at construction
+	// time and surfaces every error (cyclic types, parse failures, unset
+	// env vars without fallback, invalid tags) from New as a single
+	// errors.Join — so one boot diagnoses all misconfigurations at once
+	// rather than requiring repeated restarts. The validated map is
+	// cached and returned from subsequent Read calls, treating the
+	// configuration as frozen at construction time.
 	Strict bool
 }
 
 // StructDefaults walks struct tags to produce a nested map of defaults
 // suitable for koanf.Load. It is immutable after construction; safe for
 // concurrent Read calls.
+//
+// When Options.Strict is true, New eagerly walks the target struct and
+// caches the resulting map. Subsequent Read calls return the cached map
+// without re-walking, which means env-var changes after construction are
+// NOT picked up in Strict mode — Strict treats the configuration as
+// frozen at boot. Callers must not mutate the returned map (it is the
+// same instance returned to every Read).
+//
+// When Strict is false, every Read walks fresh so the most recent env-var
+// state is observed; the returned map is a new instance per call and may
+// be mutated freely.
 type StructDefaults struct {
 	target any
 	opts   Options
+	// cache is populated during Strict-mode construction and returned
+	// from subsequent Read calls; nil for non-Strict providers.
+	cache map[string]any
 }
 
 // New constructs a StructDefaults provider. It validates Options and the
@@ -90,9 +109,15 @@ func New(target any, opts Options) (*StructDefaults, error) {
 	p := &StructDefaults{target: target, opts: opts}
 
 	if opts.Strict {
-		if _, err := p.Read(); err != nil {
+		// Eager walk in accumulate mode so every misconfiguration in
+		// the struct surfaces in a single errors.Join instead of one
+		// per restart. Cache the validated map so subsequent Read
+		// calls do not re-walk.
+		out, err := p.walkAll(true)
+		if err != nil {
 			return nil, err
 		}
+		p.cache = out
 	}
 
 	return p, nil
@@ -106,7 +131,26 @@ func (p *StructDefaults) ReadBytes() ([]byte, error) {
 // Read walks the struct tags and returns a nested map[string]any whose tree
 // shape mirrors the koanf path layout (split on Options.Delim). Only fields
 // with an explicit DefaultTag contribute entries (sparse output).
+//
+// When Options.Strict is true, Read returns the cached map from the eager
+// New-time walk; the same map instance is returned to every Read call and
+// callers must not mutate it. When Strict is false, each Read walks fresh
+// (errors fail-fast on the first encountered) and returns a new map
+// instance.
 func (p *StructDefaults) Read() (map[string]any, error) {
+	if p.cache != nil {
+		return p.cache, nil
+	}
+	return p.walkAll(false)
+}
+
+// walkAll runs the walker against the target struct in fail-fast mode
+// (accumulate=false) or accumulate mode (accumulate=true). In
+// accumulate mode every non-cycle error is collected; the final return
+// is errors.Join of all collected errors. Cycle errors always bubble up
+// immediately because continuing past a cycle would recurse without
+// bound.
+func (p *StructDefaults) walkAll(accumulate bool) (map[string]any, error) {
 	v, err := resolveInput(p.target)
 	if err != nil {
 		return nil, err
@@ -119,9 +163,13 @@ func (p *StructDefaults) Read() (map[string]any, error) {
 		lookup:     p.opts.Lookup,
 		out:        make(map[string]any),
 		visiting:   make(map[reflect.Type]struct{}),
+		accumulate: accumulate,
 	}
 	if err := w.walk(v, "", ""); err != nil {
 		return nil, err
+	}
+	if len(w.errs) > 0 {
+		return nil, errors.Join(w.errs...)
 	}
 	return w.out, nil
 }
@@ -155,6 +203,22 @@ type walker struct {
 	// cycle detection — type Node struct { Next *Node } would otherwise
 	// recurse forever.
 	visiting map[reflect.Type]struct{}
+	// accumulate, when true, makes the walker collect non-cycle errors
+	// in errs and continue walking instead of returning early. Used by
+	// Strict mode so a single New call surfaces every misconfiguration.
+	accumulate bool
+	errs       []error
+}
+
+// fail records err. In accumulate mode it appends to w.errs and returns
+// nil so the walker continues to the next field; in fail-fast mode it
+// returns err for immediate propagation up the recursion stack.
+func (w *walker) fail(err error) error {
+	if w.accumulate {
+		w.errs = append(w.errs, err)
+		return nil
+	}
+	return err
 }
 
 // walk recursively visits every field of the struct value v. configPath is
@@ -165,7 +229,8 @@ func (w *walker) walk(v reflect.Value, configPath, goPath string) error {
 
 	// Cycle guard: two values of the same Go type share an identical
 	// reflect.Type, so this catches both direct self-reference (Node.Next *Node)
-	// and mutual recursion (A->B->A).
+	// and mutual recursion (A->B->A). Always fail-fast — continuing past a
+	// cycle would recurse without bound regardless of accumulate mode.
 	if _, cycling := w.visiting[t]; cycling {
 		path := configPath
 		if path == "" {
@@ -178,66 +243,72 @@ func (w *walker) walk(v reflect.Value, configPath, goPath string) error {
 	defer delete(w.visiting, t)
 
 	for i := range t.NumField() {
-		field := t.Field(i)
-
-		// Respect koanf:"-" — skip the field entirely.
-		ptag := field.Tag.Get(w.pathTag)
-		if ptag == "-" {
-			continue
-		}
-
-		segment := pathSegment(field, ptag)
-		gp := joinGoPath(goPath, field.Name)
-		if strings.Contains(segment, w.delim) {
-			return fmt.Errorf("%w: tag value %q contains delim %q (Go field %s)",
-				ErrInvalidTag, segment, w.delim, gp)
-		}
-		cfgPath := joinPath(configPath, segment, w.delim)
-
-		// Recurse into struct or pointer-to-struct fields unless they implement
-		// encoding.TextUnmarshaler (those are leaves parsed by parseValue).
-		// Anonymous embedded fields without an explicit path tag squash into
-		// the parent path; everything else nests under cfgPath.
-		elemType, isStruct := derefToStruct(field.Type)
-		if isStruct && !isTextUnmarshaler(field.Type) {
-			recursePath := cfgPath
-			if field.Anonymous && ptag == "" {
-				recursePath = configPath
-			}
-			// For non-pointer struct fields the value is already
-			// materialized in v.Field(i); only pointer fields need a
-			// fresh zero instance because the original pointer may be nil.
-			var sub reflect.Value
-			if field.Type.Kind() == reflect.Pointer {
-				sub = reflect.New(elemType).Elem()
-			} else {
-				sub = v.Field(i)
-			}
-			if err := w.walk(sub, recursePath, gp); err != nil {
-				return err
-			}
-			continue
-		}
-
-		// Leaf field: only emit if DefaultTag is present.
-		rawDefault, hasDefault := field.Tag.Lookup(w.defaultTag)
-		if !hasDefault {
-			continue
-		}
-
-		// Substitute ${VAR} / ${VAR:-fallback} before type dispatch so the
-		// substitution is uniform across all field types.
-		expanded, err := substituteEnv(rawDefault, w.lookup)
-		if err != nil {
-			return fmt.Errorf("%w (config path %q, Go field %s)", err, cfgPath, gp)
-		}
-
-		parsed, err := parseValue(field.Type, expanded, cfgPath, gp)
-		if err != nil {
+		if err := w.walkField(v, t.Field(i), i, configPath, goPath); err != nil {
 			return err
 		}
-		w.emit(cfgPath, parsed)
 	}
+	return nil
+}
+
+// walkField processes a single struct field at index i in v. It returns a
+// non-nil error only in fail-fast mode (and for cycle errors propagated
+// from a recursive walk); in accumulate mode all non-cycle errors are
+// appended to w.errs and walkField returns nil so the caller continues.
+func (w *walker) walkField(v reflect.Value, field reflect.StructField, i int, configPath, goPath string) error {
+	// Respect koanf:"-" — skip the field entirely.
+	ptag := field.Tag.Get(w.pathTag)
+	if ptag == "-" {
+		return nil
+	}
+
+	segment := pathSegment(field, ptag)
+	gp := joinGoPath(goPath, field.Name)
+	if strings.Contains(segment, w.delim) {
+		return w.fail(fmt.Errorf("%w: tag value %q contains delim %q (Go field %s)",
+			ErrInvalidTag, segment, w.delim, gp))
+	}
+	cfgPath := joinPath(configPath, segment, w.delim)
+
+	// Recurse into struct or pointer-to-struct fields unless they implement
+	// encoding.TextUnmarshaler (those are leaves parsed by parseValue).
+	// Anonymous embedded fields without an explicit path tag squash into
+	// the parent path; everything else nests under cfgPath.
+	elemType, isStruct := derefToStruct(field.Type)
+	if isStruct && !isTextUnmarshaler(field.Type) {
+		recursePath := cfgPath
+		if field.Anonymous && ptag == "" {
+			recursePath = configPath
+		}
+		// For non-pointer struct fields the value is already
+		// materialized in v.Field(i); only pointer fields need a fresh
+		// zero instance because the original pointer may be nil.
+		var sub reflect.Value
+		if field.Type.Kind() == reflect.Pointer {
+			sub = reflect.New(elemType).Elem()
+		} else {
+			sub = v.Field(i)
+		}
+		return w.walk(sub, recursePath, gp)
+	}
+
+	// Leaf field: only emit if DefaultTag is present.
+	rawDefault, hasDefault := field.Tag.Lookup(w.defaultTag)
+	if !hasDefault {
+		return nil
+	}
+
+	// Substitute ${VAR} / ${VAR:-fallback} before type dispatch so the
+	// substitution is uniform across all field types.
+	expanded, err := substituteEnv(rawDefault, w.lookup)
+	if err != nil {
+		return w.fail(fmt.Errorf("%w (config path %q, Go field %s)", err, cfgPath, gp))
+	}
+
+	parsed, err := parseValue(field.Type, expanded, cfgPath, gp)
+	if err != nil {
+		return w.fail(err)
+	}
+	w.emit(cfgPath, parsed)
 	return nil
 }
 

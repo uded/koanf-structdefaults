@@ -588,6 +588,69 @@ func TestInvalidInput(t *testing.T) {
 	}
 }
 
+// TestStrictModeFrozen verifies that Strict treats the configuration as
+// frozen at construction time: env-var (or any Lookup-source) changes after
+// New are not picked up by subsequent Read calls. This is the observable
+// consequence of caching the eager-walk result.
+func TestStrictModeFrozen(t *testing.T) {
+	t.Parallel()
+	type cfg struct {
+		Greeting string `koanf:"greeting" koanf-default:"${TONE}"`
+	}
+	tone := "polite"
+	lookup := func(name string) (string, bool) {
+		if name == "TONE" {
+			return tone, true
+		}
+		return "", false
+	}
+	p, err := sd.New(&cfg{}, sd.Options{Delim: ".", Strict: true, Lookup: lookup})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Mutate the underlying source. Strict should ignore the change.
+	tone = "rude"
+	m, err := p.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	got, ok := getPath(m, "greeting")
+	if !ok {
+		t.Fatal("greeting missing from cached map")
+	}
+	if got != "polite" {
+		t.Errorf("Strict cache should return %q, got %q", "polite", got)
+	}
+}
+
+// TestStrictModeSurfacesAllErrors verifies that a Strict construction with
+// multiple bad fields returns one errors.Join containing every problem,
+// rather than fail-fast on the first. This is the observable benefit of
+// accumulate-mode walking.
+func TestStrictModeSurfacesAllErrors(t *testing.T) {
+	t.Parallel()
+	type cfg struct {
+		Port    int    `koanf:"port"    koanf-default:"not-an-int"`
+		Timeout int    `koanf:"timeout" koanf-default:"also-bad"`
+		Region  string `koanf:"region"  koanf-default:"${UNSET_VAR}"`
+	}
+	emptyLookup := func(string) (string, bool) { return "", false }
+	_, err := sd.New(&cfg{}, sd.Options{Delim: ".", Strict: true, Lookup: emptyLookup})
+	if err == nil {
+		t.Fatal("expected joined errors, got nil")
+	}
+	if !errors.Is(err, sd.ErrInvalidValue) {
+		t.Errorf("want ErrInvalidValue reachable via errors.Is, got %v", err)
+	}
+	if !errors.Is(err, sd.ErrUnsetEnv) {
+		t.Errorf("want ErrUnsetEnv reachable via errors.Is, got %v", err)
+	}
+	// Three errors joined by errors.Join produce two newline separators.
+	if strings.Count(err.Error(), "\n") < 2 {
+		t.Errorf("expected at least 3 errors joined, got: %s", err.Error())
+	}
+}
+
 func TestReadBytes(t *testing.T) {
 	t.Parallel()
 	_, err := mustNew(t, &EmptyStruct{}).ReadBytes()
