@@ -315,7 +315,7 @@ func (w *walker) walkField(v reflect.Value, field reflect.StructField, i int, co
 		return w.fail(fmt.Errorf("%w (config path %q, Go field %s)", err, cfgPath, gp))
 	}
 
-	parsed, err := parseValue(field.Type, expanded, cfgPath, gp)
+	parsed, err := parseValue(field.Type, expanded, parseCtx{configPath: cfgPath, goPath: gp})
 	if err != nil {
 		return w.fail(err)
 	}
