@@ -4,6 +4,21 @@ A [koanf](https://github.com/knadh/koanf) provider that reads `koanf-default:"�
 
 Zero production dependencies. Distributed as a standalone Go module.
 
+[![CI](https://github.com/uded/koanf-structdefaults/actions/workflows/ci.yml/badge.svg)](https://github.com/uded/koanf-structdefaults/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/uded/koanf-structdefaults.svg)](https://pkg.go.dev/github.com/uded/koanf-structdefaults)
+[![Go Report Card](https://goreportcard.com/badge/github.com/uded/koanf-structdefaults)](https://goreportcard.com/report/github.com/uded/koanf-structdefaults)
+[![Release](https://img.shields.io/github/v/release/uded/koanf-structdefaults?sort=semver)](https://github.com/uded/koanf-structdefaults/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
+## Related projects
+
+This provider composes with two sibling packages in the same family:
+
+- **[koanf-validate](https://github.com/uded/koanf-validate)** — validate the assembled koanf config against struct-tag rules. The natural *post-load gate* after this provider's defaults have been merged with file/env/flag layers.
+- **[koanf-etcd](https://github.com/uded/koanf-etcd)** — production-grade koanf v2 Provider for etcd v3 (auth/TLS, nested output, watch with reconnect/resume/resync, debounce, BYO `*clientv3.Client`). A natural *runtime override* layer above this provider in the load order.
+
+Recommended load order: `koanf-structdefaults` → file → `koanf-etcd` → env, with `koanf-validate` as the post-load gate.
+
 ## Why
 
 The conventional way to declare defaults in a koanf-based app is a hand-built `confmap.Provider`:
