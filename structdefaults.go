@@ -319,7 +319,9 @@ func (w *walker) walkField(v reflect.Value, field reflect.StructField, i int, co
 	if err != nil {
 		return w.fail(err)
 	}
-	w.emit(cfgPath, parsed)
+	if err := w.emit(cfgPath, parsed); err != nil {
+		return w.fail(err)
+	}
 	return nil
 }
 
@@ -328,21 +330,40 @@ func (w *walker) walkField(v reflect.Value, field reflect.StructField, i int, co
 // emitting flat keys with delim characters in them collides
 // non-deterministically with nested inputs from other providers during
 // koanf's final Flatten pass.
-func (w *walker) emit(configPath string, value any) {
+//
+// Returns ErrInvalidTag wrapped with location context if the path would
+// overwrite an existing entry — either descending through an existing
+// leaf (intermediate-part collision) or replacing an existing value at
+// the final segment (duplicate-path collision). Both shapes signal a
+// struct-tag bug (two fields contributing to overlapping paths) that
+// would otherwise corrupt w.out silently.
+func (w *walker) emit(configPath string, value any) error {
 	parts := strings.Split(configPath, w.delim)
 	cur := w.out
 	for i, part := range parts {
 		if i == len(parts)-1 {
+			if existing, ok := cur[part]; ok {
+				return fmt.Errorf("%w: duplicate config path %q (existing entry of type %T)",
+					ErrInvalidTag, configPath, existing)
+			}
 			cur[part] = value
-			return
+			return nil
 		}
-		next, ok := cur[part].(map[string]any)
+		next, ok := cur[part]
 		if !ok {
-			next = make(map[string]any)
-			cur[part] = next
+			sub := make(map[string]any)
+			cur[part] = sub
+			cur = sub
+			continue
 		}
-		cur = next
+		nextMap, isMap := next.(map[string]any)
+		if !isMap {
+			return fmt.Errorf("%w: path %q overlaps existing leaf at %q (type %T)",
+				ErrInvalidTag, configPath, strings.Join(parts[:i+1], w.delim), next)
+		}
+		cur = nextMap
 	}
+	return nil
 }
 
 // pathSegment returns the config path segment for a field. It uses the

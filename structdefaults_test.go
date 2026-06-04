@@ -437,6 +437,56 @@ func TestDelimInTagRejected(t *testing.T) {
 	}
 }
 
+// TestEmitDetectsCollidingPaths verifies that emit rejects two flavors of
+// struct-tag bug rather than silently corrupting the output map:
+//   - duplicate-final: two fields contribute the same full path.
+//   - leaf-then-nest: a primitive field's path is a prefix of a later
+//     sub-struct's path.
+// Both shapes return ErrInvalidTag; the underlying bug is a struct
+// definition mistake (overlapping path-tags) and the error message names
+// the offending path.
+func TestEmitDetectsCollidingPaths(t *testing.T) {
+	t.Parallel()
+	t.Run("duplicate_final_path", func(t *testing.T) {
+		t.Parallel()
+		type bad struct {
+			A int `koanf:"foo" koanf-default:"1"`
+			B int `koanf:"foo" koanf-default:"2"`
+		}
+		_, err := mustNew(t, &bad{}).Read()
+		if err == nil {
+			t.Fatal("expected ErrInvalidTag for duplicate path, got nil")
+		}
+		if !errors.Is(err, sd.ErrInvalidTag) {
+			t.Errorf("want ErrInvalidTag, got %v", err)
+		}
+		if !strings.Contains(err.Error(), `"foo"`) {
+			t.Errorf("error should name the colliding path, got %q", err.Error())
+		}
+	})
+
+	t.Run("leaf_then_nest", func(t *testing.T) {
+		t.Parallel()
+		type inner struct {
+			Port int `koanf:"port" koanf-default:"8080"`
+		}
+		type bad struct {
+			Server string `koanf:"server" koanf-default:"localhost"`
+			Sub    inner  `koanf:"server"`
+		}
+		_, err := mustNew(t, &bad{}).Read()
+		if err == nil {
+			t.Fatal("expected ErrInvalidTag for leaf-then-nest collision, got nil")
+		}
+		if !errors.Is(err, sd.ErrInvalidTag) {
+			t.Errorf("want ErrInvalidTag, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "server") {
+			t.Errorf("error should name the offending segment, got %q", err.Error())
+		}
+	})
+}
+
 func TestParseErrors(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
