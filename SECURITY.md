@@ -55,14 +55,14 @@ vulnerabilities in those layers belong to your application, to
 
 ## Supported versions
 
-Security fixes target the latest minor release line. Pre-1.0 the
-project moves quickly — please upgrade to the latest minor before
-reporting an issue unless the report concerns the latest release.
+Security fixes target the latest minor release line. Always upgrade to
+the latest patch within your current minor before reporting an issue
+unless the report concerns the latest release.
 
 | Version | Status |
 |---|---|
-| `0.x` (current) | Active security support |
-| `< 0.x` | Not supported — upgrade to current |
+| `v1.x` (current) | Active security support |
+| `v0.x` | Not supported — upgrade to `v1.x` (drop-in for `v0.10.x`) |
 
 ## Coordinated disclosure
 

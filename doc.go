@@ -12,4 +12,11 @@
 //
 // See https://github.com/uded/koanf-structdefaults for the full README,
 // recipes, and the sibling koanf-validate and koanf-etcd providers.
+//
+// API stability: this package follows Go module semantic versioning.
+// The v1.x API is strictly additive — new Options fields, new sentinel
+// errors, and new methods may land in minor releases, but renames,
+// removals, and signature changes are reserved for a future v2
+// module-path bump. The MSRV tracks koanf/v2's MSRV (currently Go
+// 1.23) and will not be bumped independently of upstream.
 package structdefaults

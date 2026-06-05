@@ -62,8 +62,10 @@ pipeline on Go 1.23, 1.24, and 1.25.
    `parse.go` with a dedicated test in `structdefaults_test.go`'s
    table-driven layout.
 7. Public API additions (new `Options` fields, new sentinel errors)
-   need godoc and a README mention. Pre-v1.0 the API can still evolve,
-   but new surface should be designed to survive v1.0.
+   need godoc and a README mention. The `v1.x` API is **strictly
+   additive** — renames, removals, and signature changes are reserved
+   for a future `v2` module-path bump. Design new surface assuming
+   you'll live with it for years.
 
 ## Commit and code style
 
