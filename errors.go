@@ -43,6 +43,13 @@ var ErrCyclicType = errors.New("structdefaults: cyclic struct type")
 // errors.Is(err, ErrLookupPanic) to distinguish a misbehaving adapter
 // (Vault, AWS Secrets Manager, etc.) from a missing variable
 // (ErrUnsetEnv).
+//
+// Recovered panic values are rendered cautiously: string and error
+// panic values are reproduced verbatim (those are typically
+// developer-typed diagnostic messages), but any other type is
+// rendered opaquely as "panic value of type T (suppressed)". This
+// protects against adapters that panic with a struct or value
+// embedding the resolved secret.
 var ErrLookupPanic = errors.New("structdefaults: env lookup panicked")
 
 // ErrInvalidTag is returned when a struct tag value cannot be used as a

@@ -306,6 +306,39 @@ func TestEnvLookup_PanicConvertedToError(t *testing.T) {
 	}
 }
 
+// TestEnvLookup_PanicWithStructValueRedacted verifies the cautious-render
+// contract for non-string / non-error panic values. An adapter that panics
+// with a struct embedding the resolved secret (a realistic Vault failure
+// mode where the response is the panic value) must not leak that secret
+// into err.Error(); only the type is rendered.
+func TestEnvLookup_PanicWithStructValueRedacted(t *testing.T) {
+	t.Parallel()
+	type cfg struct {
+		Name string `koanf:"name" koanf-default:"${WHATEVER}"`
+	}
+	type sensitivePayload struct {
+		Token   string
+		Comment string
+	}
+	const secret = "AKIA-NOT-REAL-SECRET-EXAMPLE-zzz"
+	panicking := func(string) (string, bool) {
+		panic(sensitivePayload{Token: secret, Comment: "should not appear"})
+	}
+	_, err := mustNewEnv(t, &cfg{}, panicking).Read()
+	if err == nil {
+		t.Fatal("expected error from panicking lookup, got nil")
+	}
+	if !errors.Is(err, ErrLookupPanic) {
+		t.Errorf("want ErrLookupPanic, got %v", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("err.Error() leaked secret from struct panic value: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "sensitivePayload") {
+		t.Errorf("err.Error() should name the panic value type, got %q", err.Error())
+	}
+}
+
 // ---- helpers ----------------------------------------------------------------
 
 func contains(s, sub string) bool {

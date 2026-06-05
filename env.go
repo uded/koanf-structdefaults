@@ -70,13 +70,26 @@ func substituteEnv(raw string, lookup EnvLookup) (string, error) {
 // write during transient failure) does not crash the caller's process.
 // Honors Read's (map, error) return contract.
 //
-// The recovered panic value is interpolated into the error message via
-// %v — implementations whose panic values may contain sensitive data
-// should arrange to recover internally and return an error instead.
+// The recovered panic value is rendered cautiously to avoid leaking
+// secrets that an adapter may embed in the panic. string and error
+// panic values are reproduced verbatim — those are typically
+// developer-typed diagnostic messages — but any other type is
+// rendered opaquely as "panic value of type %T (suppressed)" so an
+// adapter that panics with a struct containing the resolved secret
+// does not surface it through the error chain.
 func safeLookup(lookup EnvLookup, name string) (val string, ok bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("%w resolving %s: %v", ErrLookupPanic, name, r)
+			var detail string
+			switch v := r.(type) {
+			case string:
+				detail = v
+			case error:
+				detail = v.Error()
+			default:
+				detail = fmt.Sprintf("panic value of type %T (suppressed)", r)
+			}
+			err = fmt.Errorf("%w resolving %s: %s", ErrLookupPanic, name, detail)
 			val = ""
 			ok = false
 		}
