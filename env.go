@@ -102,14 +102,10 @@ func isValidVarName(s string) bool {
 		return false
 	}
 	for i, r := range s {
-		switch {
-		case r == '_':
-		case r >= 'A' && r <= 'Z':
-		case r >= 'a' && r <= 'z':
-		case i > 0 && r >= '0' && r <= '9':
-		default:
-			return false
+		if r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (i > 0 && r >= '0' && r <= '9') {
+			continue
 		}
+		return false
 	}
 	return true
 }
