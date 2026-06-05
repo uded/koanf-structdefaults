@@ -85,6 +85,23 @@ func TestSubstituteEnvUnit(t *testing.T) {
 			wantErrIs:  ErrUnsetEnv,
 			wantErrMsg: "MISSING",
 		},
+		{
+			// The parser is single-pass non-recursive. For ${${KNOWN}}, the
+			// inner content is "${KNOWN" which fails isValidVarName (starts
+			// with '$'), so the whole token is kept literal regardless of
+			// whether KNOWN is set.
+			name:  "nested_var_ref_kept_literal",
+			input: "${${KNOWN}}",
+			env:   map[string]string{"KNOWN": "should-not-matter"},
+			want:  "${${KNOWN}}",
+		},
+		{
+			// isValidVarName rejects non-ASCII characters; ${café} must be
+			// kept literal and must not trigger a lookup.
+			name:  "unicode_var_name_rejected",
+			input: "${café}",
+			want:  "${café}",
+		},
 	}
 
 	for _, tc := range cases {
@@ -171,7 +188,10 @@ func TestEnvIntegration_AllResolved(t *testing.T) {
 		t.Fatalf("Read: %v", err)
 	}
 
-	server := m["server"].(map[string]any)
+	server, ok := m["server"].(map[string]any)
+	if !ok {
+		t.Fatalf("m[\"server\"] is not map[string]any, got %T", m["server"])
+	}
 	if got := server["host"]; got != "prod.example.com" {
 		t.Errorf("server.host = %v, want prod.example.com", got)
 	}
@@ -201,7 +221,10 @@ func TestEnvIntegration_FallbacksWhenUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	server := m["server"].(map[string]any)
+	server, ok := m["server"].(map[string]any)
+	if !ok {
+		t.Fatalf("m[\"server\"] is not map[string]any, got %T", m["server"])
+	}
 	if got := server["host"]; got != "localhost" {
 		t.Errorf("server.host = %v, want localhost", got)
 	}
