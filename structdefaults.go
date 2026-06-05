@@ -247,7 +247,7 @@ func (w *walker) walk(v reflect.Value, configPath, goPath string) error {
 		if path == "" {
 			path = "<root>"
 		}
-		return fmt.Errorf("%w: %s (config path %q, Go field %s)",
+		return fmt.Errorf("%w: %s at config path %q (Go field %s)",
 			ErrCyclicType, t, path, goPath)
 	}
 	w.visiting[t] = struct{}{}
@@ -266,13 +266,20 @@ func (w *walker) walk(v reflect.Value, configPath, goPath string) error {
 // from a recursive walk); in accumulate mode all non-cycle errors are
 // appended to w.errs and walkField returns nil so the caller continues.
 func (w *walker) walkField(v reflect.Value, field reflect.StructField, i int, configPath, goPath string) error {
-	// Respect koanf:"-" — skip the field entirely.
 	ptag := field.Tag.Get(w.pathTag)
+	// koanf:"-" (exactly the single character) skips the field entirely,
+	// overriding any koanf-default tag. Only the exact value "-" triggers
+	// the skip; koanf:"--" or koanf:"-,omitempty" are treated as literal
+	// path segments, not skips.
 	if ptag == "-" {
 		return nil
 	}
 
-	segment := pathSegment(field, ptag)
+	// Use the tag value as the path segment; fall back to the Go field name.
+	segment := ptag
+	if segment == "" {
+		segment = field.Name
+	}
 	gp := joinGoPath(goPath, field.Name)
 	if strings.Contains(segment, w.delim) {
 		return w.fail(fmt.Errorf("%w: tag value %q contains delim %q (Go field %s)",
@@ -364,15 +371,6 @@ func (w *walker) emit(configPath string, value any) error {
 		cur = nextMap
 	}
 	return nil
-}
-
-// pathSegment returns the config path segment for a field. It uses the
-// pathTag value when non-empty, otherwise falls back to the Go field name.
-func pathSegment(field reflect.StructField, ptag string) string {
-	if ptag != "" {
-		return ptag
-	}
-	return field.Name
 }
 
 // joinPath concatenates parent and child path segments with delim.
