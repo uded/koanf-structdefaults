@@ -529,6 +529,12 @@ func TestEmitDetectsCollidingPaths(t *testing.T) {
 		if !strings.Contains(err.Error(), `"foo"`) {
 			t.Errorf("error should name the colliding path, got %q", err.Error())
 		}
+		// Operator needs to know WHICH Go field caused the collision —
+		// the second emitter (B) is the one that fails since A already
+		// claimed the path.
+		if !strings.Contains(err.Error(), "Go field B") {
+			t.Errorf("error should name the offending Go field, got %q", err.Error())
+		}
 	})
 
 	t.Run("leaf_then_nest", func(t *testing.T) {
@@ -549,6 +555,12 @@ func TestEmitDetectsCollidingPaths(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "server") {
 			t.Errorf("error should name the offending segment, got %q", err.Error())
+		}
+		// Sub.Port is the field that triggers the collision when its
+		// emit at "server.port" tries to descend through the existing
+		// leaf at "server".
+		if !strings.Contains(err.Error(), "Go field Sub.Port") {
+			t.Errorf("error should name the descending Go field, got %q", err.Error())
 		}
 	})
 }

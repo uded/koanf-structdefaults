@@ -326,7 +326,7 @@ func (w *walker) walkField(v reflect.Value, field reflect.StructField, i int, co
 	if err != nil {
 		return w.fail(err)
 	}
-	if err := w.emit(cfgPath, parsed); err != nil {
+	if err := w.emit(cfgPath, gp, parsed); err != nil {
 		return w.fail(err)
 	}
 	return nil
@@ -344,14 +344,14 @@ func (w *walker) walkField(v reflect.Value, field reflect.StructField, i int, co
 // the final segment (duplicate-path collision). Both shapes signal a
 // struct-tag bug (two fields contributing to overlapping paths) that
 // would otherwise corrupt w.out silently.
-func (w *walker) emit(configPath string, value any) error {
+func (w *walker) emit(configPath, goPath string, value any) error {
 	parts := strings.Split(configPath, w.delim)
 	cur := w.out
 	for i, part := range parts {
 		if i == len(parts)-1 {
 			if existing, ok := cur[part]; ok {
-				return fmt.Errorf("%w: duplicate config path %q (existing entry of type %T)",
-					ErrInvalidTag, configPath, existing)
+				return fmt.Errorf("%w: duplicate config path %q at Go field %s (existing entry of type %T)",
+					ErrInvalidTag, configPath, goPath, existing)
 			}
 			cur[part] = value
 			return nil
@@ -365,8 +365,8 @@ func (w *walker) emit(configPath string, value any) error {
 		}
 		nextMap, isMap := next.(map[string]any)
 		if !isMap {
-			return fmt.Errorf("%w: path %q overlaps existing leaf at %q (type %T)",
-				ErrInvalidTag, configPath, strings.Join(parts[:i+1], w.delim), next)
+			return fmt.Errorf("%w: path %q at Go field %s overlaps existing leaf at %q (type %T)",
+				ErrInvalidTag, configPath, goPath, strings.Join(parts[:i+1], w.delim), next)
 		}
 		cur = nextMap
 	}
