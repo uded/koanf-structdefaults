@@ -17,6 +17,7 @@
 // The v1.x API is strictly additive — new Options fields, new sentinel
 // errors, and new methods may land in minor releases, but renames,
 // removals, and signature changes are reserved for a future v2
-// module-path bump. The MSRV tracks koanf/v2's MSRV (currently Go
-// 1.23) and will not be bumped independently of upstream.
+// module-path bump. The MSRV currently aligns with koanf/v2's MSRV
+// (Go 1.23). We aim to keep that alignment where practical and call
+// out any deviation in release notes.
 package structdefaults
