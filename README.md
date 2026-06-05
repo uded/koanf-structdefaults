@@ -139,7 +139,7 @@ type Options struct {
 | Tag | Behavior |
 |---|---|
 | `koanf:"name"` | path segment is `name` |
-| `koanf:"-"` | field is skipped entirely (overrides any `koanf-default`) |
+| `koanf:"-"` | field is skipped entirely (overrides any `koanf-default`); only the exact single-character value `"-"` triggers the skip — `koanf:"--"` or `koanf:"-,opt"` are treated as literal path segments |
 | `koanf:""` or absent | path segment is the Go field name |
 | `koanf-default:"value"` | declared default for this field |
 | `koanf-default:""` | empty-string default (only meaningful for `string`) |
@@ -184,6 +184,8 @@ p, err := structdefaults.New(&cfg, structdefaults.Options{
 ### Security note
 
 Struct-tag values are **compiled into your binary** and visible in `strings ./binary`. Never embed secrets directly in `koanf-default:"…"` — use `${VAR}` substitution and resolve them from your environment or secret store at runtime. Errors from this library may include env-var **names** (not values); route library errors through your standard log-redaction pipeline.
+
+**Strict mode env-var enumeration.** When `Strict: true`, `New` probes every `${VAR}` reference at construction time and surfaces every unresolved name in a joined error. A crash or panic during Strict construction (or its captured stderr/log line) therefore enumerates the env-var **names** the application expects to find at boot. On shared hosts, CI runners, or platforms with verbose crash reporting that ships stack traces to third parties, treat env-var names as potentially sensitive: redact `ErrUnsetEnv` messages, or use non-Strict mode so unset references surface lazily from `Read()` instead of being aggregated upfront.
 
 ## Strict mode
 
