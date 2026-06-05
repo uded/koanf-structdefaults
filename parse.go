@@ -118,54 +118,110 @@ func parsePrimitive(fieldType reflect.Type, raw string, ctx parseCtx) (any, erro
 	}
 }
 
-// intBits maps each signed-int Kind to the bit size strconv.ParseInt expects.
-var intBits = map[reflect.Kind]int{
-	reflect.Int:   64,
-	reflect.Int8:  8,
-	reflect.Int16: 16,
-	reflect.Int32: 32,
-	reflect.Int64: 64,
-}
-
-// uintBits maps each unsigned-int Kind to the bit size strconv.ParseUint expects.
-var uintBits = map[reflect.Kind]int{
-	reflect.Uint:   64,
-	reflect.Uint8:  8,
-	reflect.Uint16: 16,
-	reflect.Uint32: 32,
-	reflect.Uint64: 64,
-}
-
+// parseSignedInt parses raw as a decimal integer and returns a typed Go value
+// (int, int8, int16, int32, or int64) matching fieldType.Kind(). The bit-size
+// constraint is applied at parse time so overflow is caught by strconv before
+// any conversion occurs. Returns ErrUnsupportedType for any Kind not in the
+// signed-integer set.
 func parseSignedInt(fieldType reflect.Type, raw string, ctx parseCtx) (any, error) {
-	v, err := strconv.ParseInt(raw, 10, intBits[fieldType.Kind()])
-	if err != nil {
-		return nil, ctx.wrapInvalid(err)
+	switch fieldType.Kind() {
+	case reflect.Int:
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, ctx.wrapInvalid(err)
+		}
+		return int(v), nil
+	case reflect.Int8:
+		v, err := strconv.ParseInt(raw, 10, 8)
+		if err != nil {
+			return nil, ctx.wrapInvalid(err)
+		}
+		return int8(v), nil
+	case reflect.Int16:
+		v, err := strconv.ParseInt(raw, 10, 16)
+		if err != nil {
+			return nil, ctx.wrapInvalid(err)
+		}
+		return int16(v), nil
+	case reflect.Int32:
+		v, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			return nil, ctx.wrapInvalid(err)
+		}
+		return int32(v), nil
+	case reflect.Int64:
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, ctx.wrapInvalid(err)
+		}
+		return v, nil
+	default:
+		return nil, fmt.Errorf("%w: config path %q (Go field %s) has unsupported type %s",
+			ErrUnsupportedType, ctx.configPath, ctx.goPath, fieldType)
 	}
-	out := reflect.New(fieldType).Elem()
-	out.SetInt(v)
-	return out.Interface(), nil
 }
 
+// parseUnsignedInt parses raw as a decimal non-negative integer and returns a
+// typed Go value (uint, uint8, uint16, uint32, or uint64) matching
+// fieldType.Kind(). Returns ErrUnsupportedType for any Kind not in the
+// unsigned-integer set.
 func parseUnsignedInt(fieldType reflect.Type, raw string, ctx parseCtx) (any, error) {
-	v, err := strconv.ParseUint(raw, 10, uintBits[fieldType.Kind()])
-	if err != nil {
-		return nil, ctx.wrapInvalid(err)
+	switch fieldType.Kind() {
+	case reflect.Uint:
+		v, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return nil, ctx.wrapInvalid(err)
+		}
+		return uint(v), nil
+	case reflect.Uint8:
+		v, err := strconv.ParseUint(raw, 10, 8)
+		if err != nil {
+			return nil, ctx.wrapInvalid(err)
+		}
+		return uint8(v), nil
+	case reflect.Uint16:
+		v, err := strconv.ParseUint(raw, 10, 16)
+		if err != nil {
+			return nil, ctx.wrapInvalid(err)
+		}
+		return uint16(v), nil
+	case reflect.Uint32:
+		v, err := strconv.ParseUint(raw, 10, 32)
+		if err != nil {
+			return nil, ctx.wrapInvalid(err)
+		}
+		return uint32(v), nil
+	case reflect.Uint64:
+		v, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return nil, ctx.wrapInvalid(err)
+		}
+		return v, nil
+	default:
+		return nil, fmt.Errorf("%w: config path %q (Go field %s) has unsupported type %s",
+			ErrUnsupportedType, ctx.configPath, ctx.goPath, fieldType)
 	}
-	out := reflect.New(fieldType).Elem()
-	out.SetUint(v)
-	return out.Interface(), nil
 }
 
+// parseFloat parses raw as a floating-point number and returns a typed Go
+// value (float32 or float64) matching fieldType.Kind(). Returns
+// ErrUnsupportedType for any Kind not in the float set.
 func parseFloat(fieldType reflect.Type, raw string, ctx parseCtx) (any, error) {
-	bits := 64
-	if fieldType.Kind() == reflect.Float32 {
-		bits = 32
+	switch fieldType.Kind() {
+	case reflect.Float32:
+		v, err := strconv.ParseFloat(raw, 32)
+		if err != nil {
+			return nil, ctx.wrapInvalid(err)
+		}
+		return float32(v), nil
+	case reflect.Float64:
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return nil, ctx.wrapInvalid(err)
+		}
+		return v, nil
+	default:
+		return nil, fmt.Errorf("%w: config path %q (Go field %s) has unsupported type %s",
+			ErrUnsupportedType, ctx.configPath, ctx.goPath, fieldType)
 	}
-	v, err := strconv.ParseFloat(raw, bits)
-	if err != nil {
-		return nil, ctx.wrapInvalid(err)
-	}
-	out := reflect.New(fieldType).Elem()
-	out.SetFloat(v)
-	return out.Interface(), nil
 }
