@@ -339,6 +339,32 @@ func TestEnvLookup_PanicWithStructValueRedacted(t *testing.T) {
 	}
 }
 
+// TestEnvLookup_PanicWithErrorValue verifies the cautious-render contract
+// for error-typed panic values: those reproduce verbatim, on the
+// assumption that an adapter author who panic'd with an error type was
+// constructing an explicit diagnostic message, not leaking a value
+// payload. Covers the case error: arm of safeLookup's type switch.
+func TestEnvLookup_PanicWithErrorValue(t *testing.T) {
+	t.Parallel()
+	type cfg struct {
+		Name string `koanf:"name" koanf-default:"${WHATEVER}"`
+	}
+	const diagnostic = "vault: backend unreachable after 3 retries"
+	panicking := func(string) (string, bool) {
+		panic(errors.New(diagnostic))
+	}
+	_, err := mustNewEnv(t, &cfg{}, panicking).Read()
+	if err == nil {
+		t.Fatal("expected error from panicking lookup, got nil")
+	}
+	if !errors.Is(err, ErrLookupPanic) {
+		t.Errorf("want ErrLookupPanic, got %v", err)
+	}
+	if !strings.Contains(err.Error(), diagnostic) {
+		t.Errorf("err.Error() should reproduce the error panic value, got %q", err.Error())
+	}
+}
+
 // ---- helpers ----------------------------------------------------------------
 
 func contains(s, sub string) bool {

@@ -956,3 +956,78 @@ func flatKeys(m map[string]any, prefix string) []string {
 	}
 	return out
 }
+
+// ---- coverage-completing tests ---------------------------------------------
+//
+// The tests below close real (not paranoid) branches that existing tests miss:
+// the cycle error formatter's empty-configPath fallback (anonymous self-embed),
+// a leaf field that carries no koanf-default tag at all, and the cycle-
+// fail-fast invariant under Strict accumulate mode.
+
+// TestCyclicAnonymousSelfEmbed verifies the cycle error formatter's
+// "<root>" fallback fires when the cycle is detected at the very first
+// recursion level — anonymous *Self embed pushes the walker back into
+// the parent's empty config path before the visiting check rejects the
+// re-entry. The two existing cycle tests (linked-list and tree) both
+// have named koanf fields, so they exercise the non-empty-path branch.
+type cyclicAnonSelf struct {
+	*cyclicAnonSelf
+}
+
+func TestCyclicAnonymousSelfEmbed(t *testing.T) {
+	t.Parallel()
+	_, err := mustNew(t, &cyclicAnonSelf{}).Read()
+	if err == nil {
+		t.Fatal("expected ErrCyclicType, got nil")
+	}
+	if !errors.Is(err, sd.ErrCyclicType) {
+		t.Errorf("want ErrCyclicType, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "<root>") {
+		t.Errorf("cycle at the root should be labelled <root>, got %q", err.Error())
+	}
+}
+
+// TestLeafFieldWithoutDefault verifies that a leaf field carrying a
+// koanf:"…" path tag but no koanf-default tag is skipped silently (the
+// sparse-output contract documented in the README). Every existing
+// test struct happens to provide a default on every leaf, so the
+// "no DefaultTag, return nil" branch in walkField is otherwise
+// unexercised.
+func TestLeafFieldWithoutDefault(t *testing.T) {
+	t.Parallel()
+	type cfg struct {
+		WithDefault int    `koanf:"port" koanf-default:"8080"`
+		BareLeaf    string `koanf:"name"`
+	}
+	m := mustRead(t, mustNew(t, &cfg{}))
+	if _, ok := getPath(m, "port"); !ok {
+		t.Error("expected 'port' key to be present from koanf-default tag")
+	}
+	if _, ok := getPath(m, "name"); ok {
+		t.Errorf("expected 'name' to be omitted (no koanf-default tag), got %v", m)
+	}
+}
+
+// TestStrictModeCycleFailFast verifies the documented invariant that
+// cycle errors abort the accumulate-mode walk immediately, even when
+// Strict mode would otherwise collect every error via errors.Join.
+// Continuing past a cycle would recurse without bound, so cycle
+// detection short-circuits the collector.
+func TestStrictModeCycleFailFast(t *testing.T) {
+	t.Parallel()
+	type cyclicLeaf struct {
+		Next *cyclicLeaf `koanf:"next"`
+	}
+	type cfg struct {
+		BadParse int         `koanf:"bad" koanf-default:"not-an-int"`
+		Cycle    *cyclicLeaf `koanf:"cycle"`
+	}
+	_, err := sd.New(&cfg{}, sd.Options{Delim: ".", Strict: true})
+	if err == nil {
+		t.Fatal("expected error from Strict construction, got nil")
+	}
+	if !errors.Is(err, sd.ErrCyclicType) {
+		t.Errorf("want ErrCyclicType reachable via errors.Is, got %v", err)
+	}
+}
